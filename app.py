@@ -15,10 +15,8 @@ import base64
 
 LOCAL_STORAGE_JS = """
 <script>
-// Local Storage Manager for Streamlit
 const StorageManager = {
     prefix: 'protrade_',
-    
     save: function(key, data) {
         try {
             localStorage.setItem(this.prefix + key, JSON.stringify(data));
@@ -28,7 +26,6 @@ const StorageManager = {
             return false;
         }
     },
-    
     load: function(key) {
         try {
             const item = localStorage.getItem(this.prefix + key);
@@ -37,72 +34,38 @@ const StorageManager = {
             console.error('Storage load error:', e);
             return null;
         }
-    },
-    
-    remove: function(key) {
-        localStorage.removeItem(this.prefix + key);
-    },
-    
-    clear: function() {
-        Object.keys(localStorage).forEach(key => {
-            if (key.startsWith(this.prefix)) {
-                localStorage.removeItem(key);
-            }
-        });
     }
 };
-
-// Auto-save on page unload
-window.addEventListener('beforeunload', function() {
-    window.parent.postMessage({type: 'save_state'}, '*');
-});
-
-// Handle messages from Streamlit
-window.addEventListener('message', function(e) {
-    if (e.data.type === 'load_state_response') {
-        // State loaded from Python
-        console.log('State loaded from storage');
-    }
-});
 </script>
 """
 
 def init_local_storage():
-    """تهيئة نظام التخزين المحلي"""
     st.components.v1.html(LOCAL_STORAGE_JS, height=0)
 
-def save_to_browser(key, data):
-    """حفظ البيانات في المتصفح"""
+def export_data():
+    data = {
+        'analysis_history': st.session_state.analysis_history,
+        'strong_signals': st.session_state.strong_signals,
+        'saved_signals': st.session_state.saved_signals,
+        'messages': st.session_state.messages,
+        'timestamp': datetime.now().isoformat()
+    }
+    return base64.b64encode(json.dumps(data).encode()).decode()
+
+def import_data(encoded_data):
     try:
-        serialized = base64.b64encode(json.dumps(data).encode()).decode()
-        js_code = f"""
-        <script>
-        localStorage.setItem('protrade_{key}', '{serialized}');
-        </script>
-        """
-        st.components.v1.html(js_code, height=0)
+        data = json.loads(base64.b64decode(encoded_data).decode())
+        st.session_state.analysis_history = data.get('analysis_history', [])
+        st.session_state.strong_signals = data.get('strong_signals', [])
+        st.session_state.saved_signals = data.get('saved_signals', [])
+        st.session_state.messages = data.get('messages', [])
         return True
     except Exception as e:
-        st.error(f"خطأ في الحفظ: {e}")
+        st.error(f"خطأ في الاستيراد: {e}")
         return False
 
-def load_from_browser(key):
-    """تحميل البيانات من المتصفح"""
-    try:
-        js_code = f"""
-        <script>
-        const data = localStorage.getItem('protrade_{key}');
-        const decoded = data ? atob(data) : null;
-        window.parent.postMessage({{type: 'storage_data', key: '{key}', data: decoded}}, '*');
-        </script>
-        """
-        st.components.v1.html(js_code, height=0)
-        return None  # Will be handled via callback in future versions
-    except:
-        return None
-
 # ============================================================
-# 1. إعداد الصفحة - إصلاح مشكلة التمرير
+# 1. إعداد الصفحة - CSS محسّن بدون إخفاء الشريط الجانبي
 # ============================================================
 st.set_page_config(
     page_title="ProTrade Elite 5.0", 
@@ -111,35 +74,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS شامل لإصلاح التمرير وجميع المشاكل البصرية
+# CSS محسّن - إزالة أي خصائص تؤثر على الشريط الجانبي
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
     * {font-family: 'Cairo', sans-serif !important;}
     
-    /* إصلاح مشكلة التمرير الرئيسية */
+    /* إصلاح التمرير فقط دون المساس بالشريط الجانبي */
     html, body {
-        height: 100%;
-        overflow-y: auto !important;
-        overflow-x: hidden !important;
         scroll-behavior: smooth;
     }
     
-    .main {
-        overflow: auto !important;
-        height: 100vh;
-    }
-    
-    .block-container {
+    .main .block-container {
         padding-top: 1rem; 
         padding-bottom: 2rem; 
         padding-left: 1rem; 
         padding-right: 1rem;
         max-width: 100%;
-        overflow-x: hidden;
     }
     
-    /* إخفاء شريط التمرير الأفقي */
+    /* تنسيق شريط التمرير */
     ::-webkit-scrollbar {
         width: 8px;
         height: 8px;
@@ -158,25 +112,7 @@ st.markdown("""
         background: #e94560;
     }
     
-    /* تثبيت الشريط الجانبي */
-    [data-testid="stSidebar"] {
-        position: fixed !important;
-        height: 100vh;
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-    
-    [data-testid="stSidebarContent"] {
-        padding-bottom: 100px;
-    }
-    
-    /* تحسين التمرير في التبويبات */
-    .stTabs [data-baseweb="tab-panel"] {
-        overflow-y: auto !important;
-        max-height: calc(100vh - 200px);
-    }
-    
-    /* تحسين البطاقات */
+    /* البطاقات والتنسيقات الأخرى */
     .main-signal {
         padding: 20px; 
         border-radius: 15px; 
@@ -186,9 +122,6 @@ st.markdown("""
         color: white;
         box-shadow: 0 8px 32px rgba(0,0,0,0.3); 
         margin: 8px 0;
-        position: sticky;
-        top: 0;
-        z-index: 100;
     }
     
     .bg-strong-buy {background: linear-gradient(135deg, #00b09b, #96c93d);}
@@ -205,27 +138,18 @@ st.markdown("""
         border: 1px solid #0f3460; 
         color: white; 
         margin: 5px 0;
-        transition: transform 0.2s;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,255,136,0.2);
     }
     
     .metric-card h3 {
         color: #e94560; 
         margin: 0; 
         font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 1px;
     }
     
     .metric-card h2 {
         color: #00ff88; 
         margin: 5px 0; 
         font-size: 18px;
-        font-weight: bold;
     }
     
     .ai-box {
@@ -235,7 +159,6 @@ st.markdown("""
         border-radius: 15px;
         border: 2px solid #00ff88; 
         margin: 10px 0;
-        box-shadow: 0 0 20px rgba(0,255,136,0.1);
     }
     
     .rec-card {
@@ -245,36 +168,12 @@ st.markdown("""
         margin: 10px 0;
         border-left: 5px solid; 
         color: white;
-        transition: all 0.3s ease;
-    }
-    
-    .rec-card:hover {
-        transform: translateX(5px);
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
     }
     
     .rec-buy {border-color: #00ff88;}
     .rec-sell {border-color: #ff4444;}
-    .rec-strong-buy {
-        border-color: #00ff88; 
-        box-shadow: 0 0 15px rgba(0,255,136,0.3);
-        animation: pulse-green 2s infinite;
-    }
-    .rec-strong-sell {
-        border-color: #ff4444; 
-        box-shadow: 0 0 15px rgba(255,68,68,0.3);
-        animation: pulse-red 2s infinite;
-    }
-    
-    @keyframes pulse-green {
-        0%, 100% { box-shadow: 0 0 15px rgba(0,255,136,0.3); }
-        50% { box-shadow: 0 0 25px rgba(0,255,136,0.6); }
-    }
-    
-    @keyframes pulse-red {
-        0%, 100% { box-shadow: 0 0 15px rgba(255,68,68,0.3); }
-        50% { box-shadow: 0 0 25px rgba(255,68,68,0.6); }
-    }
+    .rec-strong-buy {border-color: #00ff88; box-shadow: 0 0 15px rgba(0,255,136,0.3);}
+    .rec-strong-sell {border-color: #ff4444; box-shadow: 0 0 15px rgba(255,68,68,0.3);}
     
     .target-hit {
         background: linear-gradient(135deg, #00b09b, #96c93d); 
@@ -307,7 +206,7 @@ st.markdown("""
         border: 1px solid #333;
     }
     
-    /* تحسين TradingView */
+    /* TradingView */
     .tradingview-widget-container {
         height: 75vh !important;
         min-height: 500px;
@@ -317,128 +216,32 @@ st.markdown("""
         height: 100% !important;
     }
     
-    /* تحسين الأزرار */
-    .stButton>button {
-        transition: all 0.3s !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.5px;
-    }
-    
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
-    
-    /* تحسين حقول الإدخال */
-    .stTextInput>div>div>input,
-    .stSelectbox>div>div>select {
-        background-color: #1a1a2e !important;
-        color: white !important;
-        border: 1px solid #0f3460 !important;
-    }
-    
-    /* تحسين التبويبات */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background-color: #1a1a2e;
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        font-weight: 600;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background-color: #0f3460 !important;
-        color: #00ff88 !important;
-    }
-    
-    /* تحسين شريط التقدم */
-    .stProgress > div > div {
-        background-color: #00ff88 !important;
-    }
-    
-    /* Toast notifications */
-    .toast {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: #1a1a2e;
-        color: white;
-        padding: 15px 20px;
-        border-radius: 10px;
-        border-left: 4px solid #00ff88;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        z-index: 9999;
-        animation: slideIn 0.3s ease;
-    }
-    
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    
-    /* تحسين للجوال */
-    @media (max-width: 768px) {
-        .main-signal {
-            font-size: 18px;
-            padding: 15px;
-        }
-        
-        .metric-card h2 {
-            font-size: 14px;
-        }
-        
-        .tradingview-widget-container {
-            height: 50vh !important;
-        }
-    }
-    
-    /* إخفاء العناصر غير الضرورية */
+    /* إخفاء العناصر غير الضرورية فقط من الهيدر والفوتر */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
-    /* تحسين التحميل */
-    .loading-spinner {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 200px;
-    }
-    
-    .spinner {
-        width: 50px;
-        height: 50px;
-        border: 3px solid #0f3460;
-        border-top: 3px solid #00ff88;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-    
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
+    /* تحسين للجوال */
+    @media (max-width: 768px) {
+        .main-signal {font-size: 18px; padding: 15px;}
+        .metric-card h2 {font-size: 14px;}
+        .tradingview-widget-container {height: 50vh !important;}
     }
 </style>
 """, unsafe_allow_html=True)
 
-# تهيئة Local Storage
 init_local_storage()
 
 # ============================================================
-# 2. Session State مع دعم Local Storage
+# 2. Session State
 # ============================================================
 
 def init_session_state():
-    """تهيئة حالة الجلسة مع التحميل من التخزين المحلي"""
-    
     defaults = {
         'messages': [],
         'analysis_history': [],
         'strong_signals': [],
-        'saved_signals': [],  # للتوصيات المحفوظة
+        'saved_signals': [],
         'ok': False,
         'data': None,
         'curr': None,
@@ -457,53 +260,18 @@ def init_session_state():
         'sigs': {},
         'cons': 0,
         'last_update': None,
-        'auto_refresh': False,
-        'dark_mode': True,
-        'notifications': True,
     }
     
-    # تحميل من التخزين المحلي إذا وجد
     for key, default_value in defaults.items():
         if key not in st.session_state:
-            # محاولة التحميل من local storage (سيتم تنفيذها عبر JavaScript)
             st.session_state[key] = default_value
     
-    # حفظ تلقائي عند التغيير
     if 'initialized' not in st.session_state:
         st.session_state.initialized = True
 
 init_session_state()
 
-# ============================================================
-# 3. دوال حفظ وتحميل البيانات
-# ============================================================
-
-def export_data():
-    """تصدير جميع البيانات"""
-    data = {
-        'analysis_history': st.session_state.analysis_history,
-        'strong_signals': st.session_state.strong_signals,
-        'saved_signals': st.session_state.saved_signals,
-        'messages': st.session_state.messages,
-        'timestamp': datetime.now().isoformat()
-    }
-    return base64.b64encode(json.dumps(data).encode()).decode()
-
-def import_data(encoded_data):
-    """استيراد البيانات"""
-    try:
-        data = json.loads(base64.b64decode(encoded_data).decode())
-        st.session_state.analysis_history = data.get('analysis_history', [])
-        st.session_state.strong_signals = data.get('strong_signals', [])
-        st.session_state.saved_signals = data.get('saved_signals', [])
-        st.session_state.messages = data.get('messages', [])
-        return True
-    except Exception as e:
-        st.error(f"خطأ في الاستيراد: {e}")
-        return False
-
 def save_current_analysis():
-    """حفظ التحليل الحالي"""
     if st.session_state.get('ok'):
         analysis = {
             'ticker': st.session_state['ticker'],
@@ -520,7 +288,7 @@ def save_current_analysis():
     return False
 
 # ============================================================
-# 4. الأصول
+# 3. الأصول
 # ============================================================
 FOREX_PAIRS = {
     "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X",
@@ -568,7 +336,6 @@ TV_INTERVALS = {
     "يومي": "D", "أسبوعي": "W", "شهري": "M",
 }
 
-
 def to_tv_symbol(ticker):
     ticker = ticker.upper()
     if ticker.endswith("=X"): return f"FX:{ticker.replace('=X', '')}"
@@ -579,9 +346,8 @@ def to_tv_symbol(ticker):
     if ticker in cmd: return cmd[ticker]
     return f"NASDAQ:{ticker}"
 
-
 # ============================================================
-# 5. AI
+# 4. AI
 # ============================================================
 repo_id = "Qwen/Qwen2.5-72B-Instruct"
 try:
@@ -589,9 +355,8 @@ try:
 except: 
     client = None
 
-
 # ============================================================
-# 6. دوال التحليل
+# 5. دوال التحليل
 # ============================================================
 
 def safe_val(value, default=0.0):
@@ -603,9 +368,7 @@ def safe_val(value, default=0.0):
     except: 
         return default
 
-
 def get_current_price(ticker):
-    """جلب السعر الحالي فقط - سريع"""
     try:
         stock = yf.Ticker(ticker)
         try:
@@ -614,7 +377,6 @@ def get_current_price(ticker):
                 return float(p)
         except: 
             pass
-        
         try:
             info = stock.info
             p = info.get('regularMarketPrice') or info.get('currentPrice')
@@ -622,14 +384,12 @@ def get_current_price(ticker):
                 return float(p)
         except: 
             pass
-        
         hist = stock.history(period="1d")
         if hist is not None and not hist.empty:
             return float(hist['Close'].iloc[-1])
     except: 
         pass
     return None
-
 
 def fetch_data(ticker, tf_key, max_retries=3):
     ticker = ticker.strip().upper()
@@ -668,7 +428,6 @@ def fetch_data(ticker, tf_key, max_retries=3):
             else: 
                 return None, None
     return None, None
-
 
 def calculate_indicators(df):
     n = len(df)
@@ -811,9 +570,8 @@ def calculate_indicators(df):
 
     return df
 
-
 # ============================================================
-# 7. التسجيل والتحليل
+# 6. التسجيل والتحليل
 # ============================================================
 
 def smart_technical_score(df):
@@ -1137,7 +895,6 @@ def smart_technical_score(df):
     
     return score, details, curr, signals, consensus
 
-
 def fundamental_score(info):
     score = 0
     details = []
@@ -1258,7 +1015,6 @@ def fundamental_score(info):
     
     return score, details
 
-
 def calc_targets(curr, t_score):
     price = safe_val(curr['Close'])
     atr = safe_val(curr.get('ATR'))
@@ -1276,7 +1032,6 @@ def calc_targets(curr, t_score):
     rr = abs(tp2-price)/abs(price-sl) if abs(price-sl) > 0 else 0
     
     return {'sl':sl, 'tp1':tp1, 'tp2':tp2, 'tp3':tp3, 'atr':atr, 'rr':rr}
-
 
 def final_signal(t_score, f_score, ai_v):
     t_n = (t_score/50)*100
@@ -1307,7 +1062,6 @@ def final_signal(t_score, f_score, ai_v):
         return "بيع", "bg-sell", combined
     
     return "محايد", "bg-neutral", combined
-
 
 def get_ai_verdict(client, ticker, ts, fs, td, fd, curr, info):
     if not client: 
@@ -1344,13 +1098,11 @@ JSON فقط:
     except: 
         return None
 
-
 # ============================================================
-# 8. TradingView
+# 7. TradingView
 # ============================================================
 
 def render_tv_chart(tv_symbol, interval="D"):
-    """شارت TradingView محسّن"""
     chart_key = f"tv_chart_{tv_symbol}_{interval}_{int(time.time())}"
     
     chart_html = f"""
@@ -1391,7 +1143,6 @@ def render_tv_chart(tv_symbol, interval="D"):
     """
     st.components.v1.html(chart_html, height=800, scrolling=False)
 
-
 def render_tv_tape():
     tape_html = """
     <div class="tradingview-widget-container" style="margin:0;padding:0;width:100%;height:80px;">
@@ -1413,13 +1164,11 @@ def render_tv_tape():
     """
     st.components.v1.html(tape_html, height=80)
 
-
 # ============================================================
-# 9. المسح والتحديث
+# 8. المسح والتحديث
 # ============================================================
 
 def background_scan(tf_key="يومي"):
-    """مسح شامل مع تحديث فوري"""
     strong_signals = []
     all_assets = {}
     all_assets.update(FOREX_PAIRS)
@@ -1485,14 +1234,11 @@ def background_scan(tf_key="يومي"):
     progress_bar.empty()
     status_text.empty()
     
-    # حفظ تلقائي في الجلسة
     st.session_state.strong_signals = sorted(strong_signals, key=lambda x: abs(x['combined_score']), reverse=True)
     
     return st.session_state.strong_signals
 
-
 def update_all_prices():
-    """تحديث أسعار جميع التوصيات"""
     if not st.session_state.strong_signals:
         return 0
 
@@ -1556,7 +1302,6 @@ def update_all_prices():
     
     return updated_count
 
-
 def save_analysis(ticker, tf, sig, comb, ts, fs, price, tgts):
     entry = {
         'ticker': ticker,
@@ -1574,9 +1319,8 @@ def save_analysis(ticker, tf, sig, comb, ts, fs, price, tgts):
     st.session_state.analysis_history.insert(0, entry)
     st.session_state.analysis_history = st.session_state.analysis_history[:50]
 
-
 # ============================================================
-# 10. الواجهة الجانبية
+# 9. الواجهة الجانبية - الشريط الجانبي
 # ============================================================
 
 with st.sidebar:
@@ -1703,14 +1447,12 @@ with st.sidebar:
     st.markdown("---")
     st.caption("v5.0 | ProTrade Elite")
 
-
 # ============================================================
-# 11. العرض الرئيسي
+# 10. العرض الرئيسي
 # ============================================================
 
 render_tv_tape()
 
-# عنوان الصفحة
 st.markdown("""
 <div style="text-align:center; padding:10px 0;">
     <h1 style="color:#00ff88; margin:0; font-size:32px;">📊 ProTrade Elite 5.0</h1>
@@ -1718,7 +1460,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# التبويبات الرئيسية
 main_t1, main_t2, main_t3, main_t4, main_t5 = st.tabs([
     "📈 التحليل", "🏆 التوصيات", "📜 السجل", "🤖 AI", "⚙️ الإعدادات"
 ])
@@ -1726,7 +1467,6 @@ main_t1, main_t2, main_t3, main_t4, main_t5 = st.tabs([
 # ============== التبويب 1: التحليل ==============
 with main_t1:
     if st.session_state.get('ok'):
-        # استخراج البيانات
         data = st.session_state['data']
         curr = st.session_state['curr']
         info = st.session_state['info']
@@ -1745,11 +1485,9 @@ with main_t1:
         tf = st.session_state['tf']
         price = safe_val(curr['Close'])
 
-        # تحذير البيانات القصيرة
         if len(data) < 200:
             st.warning("⚠️ فترة البيانات قصيرة - النتائج قد تكون غير دقيقة")
 
-        # الإشارة الرئيسية
         st.markdown(f'''
         <div class="main-signal {sig_cls}">
             <div style="font-size:28px; margin-bottom:5px;">{sig}</div>
@@ -1759,21 +1497,18 @@ with main_t1:
         </div>
         ''', unsafe_allow_html=True)
 
-        # المقاييس الرئيسية
         m1, m2, m3, m4 = st.columns(4)
         m1.markdown(f'<div class="metric-card"><h3>السعر الحالي</h3><h2>{price:.5f}</h2></div>', unsafe_allow_html=True)
         m2.markdown(f'<div class="metric-card"><h3>التحليل الفني</h3><h2>{ts:+.0f}</h2></div>', unsafe_allow_html=True)
         m3.markdown(f'<div class="metric-card"><h3>التحليل الأساسي</h3><h2>{fs:+.0f}</h2></div>', unsafe_allow_html=True)
         m4.markdown(f'<div class="metric-card"><h3>نسبة المخاطرة</h3><h2>1:{tgts["rr"]:.1f}</h2></div>', unsafe_allow_html=True)
 
-        # الأهداف
         t1, t2, t3, t4 = st.columns(4)
         t1.metric("🛑 وقف الخسارة", f"{tgts['sl']:.5f}")
         t2.metric("🎯 الهدف 1", f"{tgts['tp1']:.5f}")
         t3.metric("🎯 الهدف 2", f"{tgts['tp2']:.5f}")
         t4.metric("🎯 الهدف 3", f"{tgts['tp3']:.5f}")
 
-        # شريط الإجماع
         total_s = sigs_data['buy'] + sigs_data['sell'] + sigs_data['neutral']
         if total_s > 0:
             bp = sigs_data['buy'] / total_s * 100
@@ -1801,7 +1536,6 @@ with main_t1:
             </div>
             ''', unsafe_allow_html=True)
 
-        # التبويبات الفرعية
         ct, tt, ft, at = st.tabs(["📉 الشارت", "🔬 فني", "📋 أساسي", "🤖 AI"])
 
         with ct:
@@ -1878,14 +1612,12 @@ with main_t1:
             else:
                 st.info("ℹ️ أضف مفتاح HF_TOKEN في الإعدادات لتفعيل التحليل الذكي")
 
-        # زر حفظ التحليل
         if st.button("💾 حفظ هذا التحليل", use_container_width=True):
             if save_current_analysis():
                 st.success("✅ تم الحفظ في المفضلة!")
             else:
                 st.warning("⚠️ لا يوجد تحليل حالي للحفظ")
     else:
-        # حالة الترحيب
         st.markdown('''
         <div style="text-align:center; padding:40px 20px;">
             <div style="font-size:64px; margin-bottom:20px;">📊</div>
@@ -1910,16 +1642,13 @@ with main_t1:
         </div>
         ''', unsafe_allow_html=True)
         
-        # شارت افتراضي
         render_tv_chart("FX:EURUSD", "D")
-
 
 # ============== التبويب 2: التوصيات ==============
 with main_t2:
     st.markdown("## 🏆 مركز التوصيات")
     
     if st.session_state.strong_signals:
-        # أزرار التحكم
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             if st.button("🔄 تحديث جميع الأسعار", use_container_width=True, type="primary"):
@@ -1931,7 +1660,6 @@ with main_t2:
         with c3:
             sort_by = st.selectbox("ترتيب", ["القوة", "الوقت", "الربح"], label_visibility="collapsed")
 
-        # إحصائيات سريعة
         total_r = len(st.session_state.strong_signals)
         tp_hit = sum(1 for s in st.session_state.strong_signals if s.get('status') == 'tp_hit')
         sl_hit = sum(1 for s in st.session_state.strong_signals if s.get('status') == 'sl_hit')
@@ -1947,7 +1675,6 @@ with main_t2:
 
         st.markdown("---")
         
-        # تصفية التوصيات
         filtered_signals = st.session_state.strong_signals
         
         if filter_type == "شراء":
@@ -1959,13 +1686,11 @@ with main_t2:
         elif filter_type == "محققة":
             filtered_signals = [s for s in filtered_signals if s.get('status') == 'tp_hit']
         
-        # الترتيب
         if sort_by == "القوة":
             filtered_signals = sorted(filtered_signals, key=lambda x: abs(x['combined_score']), reverse=True)
         elif sort_by == "الربح":
             filtered_signals = sorted(filtered_signals, key=lambda x: x.get('pnl_pct', 0), reverse=True)
 
-        # عرض التوصيات
         for rec in filtered_signals:
             is_buy = rec.get('direction', 'buy') == 'buy'
             status = rec.get('status', 'active')
@@ -1974,7 +1699,6 @@ with main_t2:
             pnl_pct = rec.get('pnl_pct', 0)
             entry_p = rec['entry_price']
 
-            # تحديد الحالة
             if status == 'tp_hit':
                 card_class = "rec-strong-buy"
                 status_text = "✅ أصابت الهدف!"
@@ -2017,7 +1741,7 @@ with main_t2:
                 <div style="background:#0a0a1a; border-radius:8px; height:25px; margin:10px 0; overflow:hidden; border:1px solid #333;">
                     <div style="width:{bar_width:.0f}%; height:100%; background:{bar_color}; 
                         display:flex; align-items:center; justify-content:center; color:white; 
-                        font-size:12px; font-weight:bold; transition:width 0.5s;">
+                        font-size:12px; font-weight:bold;">
                         {abs(progress):.1f}%
                     </div>
                 </div>
@@ -2037,7 +1761,6 @@ with main_t2:
             </div>
             ''', unsafe_allow_html=True)
             
-            # أزرار التحكم لكل توصية
             col1, col2, col3 = st.columns([1, 1, 2])
             with col1:
                 if st.button(f"تحليل {rec['name']}", key=f"anal_{rec['ticker']}"):
@@ -2051,13 +1774,11 @@ with main_t2:
     else:
         st.info("🔍 لا توجد توصيات حالياً. اضغط على 'مسح التوصيات' في الشريط الجانبي للبدء.")
 
-
 # ============== التبويب 3: السجل ==============
 with main_t3:
     st.markdown("## 📜 سجل التحليلات")
     
     if st.session_state.analysis_history or st.session_state.saved_signals:
-        # تبويبات السجل
         hist_tab, saved_tab = st.tabs(["السجل العام", "المحفوظات"])
         
         with hist_tab:
@@ -2103,19 +1824,16 @@ with main_t3:
     else:
         st.info("📝 السجل فارغ حالياً")
 
-
 # ============== التبويب 4: AI ==============
 with main_t4:
     st.markdown("## 🤖 المستشار الذكي")
     
-    # عرض المحادثة
     chat_container = st.container()
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    # إدخال المستخدم
     if prompt := st.chat_input("اسأل المستشار عن التحليل الفني، الأخبار، أو توصية..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         
@@ -2124,7 +1842,6 @@ with main_t4:
         
         with st.chat_message("assistant"):
             if client:
-                # بناء السياق
                 ctx = ""
                 if st.session_state.get('ok'):
                     curr = st.session_state['curr']
@@ -2151,7 +1868,6 @@ with main_t4:
                         response = st.write_stream(generate())
                         st.session_state.messages.append({"role": "assistant", "content": response})
                         
-                        # حفظ تلقائي للمحادثة المهمة
                         if any(keyword in prompt.lower() for keyword in ['توصية', 'شراء', 'بيع', 'تحليل']):
                             save_analysis('CHAT', 'AI', response[:50], 0, 0, 0, 0, {'sl':0,'tp2':0,'rr':0})
                             
@@ -2159,12 +1875,10 @@ with main_t4:
                     st.error(f"خطأ في الاتصال: {str(e)}")
             else:
                 st.warning("⚠️ أضف مفتاح HF_TOKEN في ملف secrets.toml لتفعيل المستشار الذكي")
-                st.info("يمكنك الحصول على مفتاح من: https://huggingface.co/settings/tokens")
 
     if st.button("🗑️ مسح المحادثة", key="clr_chat"):
         st.session_state.messages = []
         st.rerun()
-
 
 # ============== التبويب 5: الإعدادات ==============
 with main_t5:
@@ -2200,10 +1914,6 @@ with main_t5:
         التحليلات المقدمة للأغراض التعليمية فقط.
         التداول يحمل مخاطر عالية وقد تخسر رأس مالك.
         ''')
-        
-        st.markdown("### 📞 الدعم")
-        st.markdown("للاستفسارات والدعم الفني: support@protrade.com")
 
-# Footer
 st.markdown("---")
 st.caption("⚠️ ProTrade Elite 5.0 - تعليمي فقط. تداول على مسؤوليتك الخاصة.")
