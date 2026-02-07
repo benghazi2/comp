@@ -1,3 +1,5 @@
+--- START OF FILE app.py ---
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -8,6 +10,7 @@ import json
 import time
 from datetime import datetime
 import base64
+import db  # استيراد ملف قاعدة البيانات
 
 # ============================================================
 # 1. إعداد الصفحة وتنسيق CSS (تم الإصلاح)
@@ -18,6 +21,12 @@ st.set_page_config(
     page_icon="📈",
     initial_sidebar_state="expanded"
 )
+
+# تهيئة قاعدة البيانات عند بدء التشغيل
+try:
+    db.init_db()
+except Exception as e:
+    st.error(f"خطأ في الاتصال بقاعدة البيانات: {e}")
 
 # CSS احترافي - إصلاح الشريط الجانبي وإخفاء الشعارات
 st.markdown("""
@@ -53,17 +62,28 @@ st.markdown("""
         display: none !important;
     }
 
-    /* إصلاح الشريط الجانبي - التأكد من ظهوره */
-    [data-testid="stSidebar"] {
-        background-color: #0e1117;
+    /* ============================================================ */
+    /* إصلاح الشريط الجانبي (Sidebar Fixes) */
+    /* ============================================================ */
+    
+    /* التأكد من ظهور قسم الشريط الجانبي */
+    section[data-testid="stSidebar"] {
+        background-color: #0e1117 !important;
         border-right: 1px solid #1f2937;
+        width: 300px !important; /* عرض ثابت لضمان الظهور */
+        display: block !important;
+        visibility: visible !important;
     }
     
     /* تحسين زر إغلاق/فتح الشريط الجانبي ليكون ظاهراً دائماً */
-    [data-testid="collapsedControl"] {
+    [data-testid="stSidebarCollapsedControl"] {
         display: block !important;
         visibility: visible !important;
         color: #00ff88 !important;
+        background-color: rgba(14, 17, 23, 0.8);
+        border-radius: 50%;
+        padding: 4px;
+        z-index: 1000000; /* طبقة عالية جداً ليظهر فوق أي شيء */
     }
 
     /* تنسيق شريط التمرير */
@@ -208,23 +228,6 @@ def import_data_from_json(json_content):
     except Exception as e:
         st.error(f"خطأ في الاستيراد: {e}")
         return False
-
-def save_current_analysis():
-    if st.session_state.get('ok'):
-        analysis = {
-            'ticker': st.session_state['ticker'],
-            'tf': st.session_state['tf'],
-            'sig': st.session_state['sig'],
-            'comb': st.session_state['comb'],
-            'price': safe_val(st.session_state['curr']['Close']),
-            'time': datetime.now().isoformat()
-        }
-        # تجنب التكرار
-        if not any(d['time'] == analysis['time'] and d['ticker'] == analysis['ticker'] for d in st.session_state.saved_signals):
-            st.session_state.saved_signals.insert(0, analysis)
-            st.session_state.saved_signals = st.session_state.saved_signals[:20]
-            return True
-    return False
 
 # ============================================================
 # 3. بيانات الأصول (Assets)
@@ -571,25 +574,24 @@ def get_ai_verdict(client, ticker, ts, fs, td, fd, curr):
 with st.sidebar:
     st.markdown("## 📊 ProTrade Elite")
     
-    # 1. قسم إدارة الذاكرة والحفظ
-    with st.expander("💾 حفظ واسترجاع البيانات", expanded=False):
-        st.caption("احفظ تحليلاتك في ملف لاستعادتها لاحقاً")
+    # 1. قسم إدارة الذاكرة وقاعدة البيانات
+    with st.expander("💾 إدارة البيانات", expanded=False):
+        st.info(f"يتم حفظ التحليلات في: {db.DB_NAME}")
         
-        # زر التحميل (Download)
+        # خيار الحفظ المحلي كملف JSON (كما كان سابقاً)
         json_data = export_data_to_json()
         st.download_button(
-            label="📥 حفظ البيانات (تنزيل ملف)",
+            label="📥 نسخة احتياطية (JSON)",
             data=json_data,
             file_name=f"protrade_backup_{datetime.now().strftime('%Y%m%d')}.json",
             mime="application/json",
             use_container_width=True
         )
         
-        # زر الرفع (Upload)
-        uploaded_file = st.file_uploader("📤 استرجاع بيانات سابقة", type=['json'])
+        uploaded_file = st.file_uploader("📤 استرجاع JSON", type=['json'])
         if uploaded_file:
             if import_data_from_json(uploaded_file.read().decode()):
-                st.success("✅ تم الاسترجاع بنجاح!")
+                st.success("✅ تم الاسترجاع!")
                 time.sleep(1)
                 st.rerun()
 
@@ -622,7 +624,13 @@ with st.sidebar:
                 
                 ai_res = get_ai_verdict(client, ticker, ts, fs, td, fd, curr)
                 
-                # تحديث الحالة
+                # حفظ النتيجة في قاعدة البيانات
+                try:
+                    db.save_analysis(ticker, tf_label, sig, cls, comb, safe_val(curr['Close']), tgts, ai_res)
+                except Exception as e:
+                    st.warning(f"لم يتم الحفظ في قاعدة البيانات: {e}")
+
+                # تحديث الحالة (Session State) للعرض الحالي
                 st.session_state.update({
                     'ok': True, 'ticker': ticker, 'tf': tf_label,
                     'data': df, 'curr': curr, 'info': info,
@@ -630,7 +638,6 @@ with st.sidebar:
                     'sig': sig, 'sig_cls': cls, 'comb': comb,
                     'tgts': tgts, 'ai_v': ai_res, 'sigs': sigs
                 })
-                save_current_analysis()
                 st.rerun()
             else:
                 st.error("فشل في جلب البيانات، حاول مجدداً.")
@@ -728,12 +735,28 @@ if st.session_state.get('ok'):
         else:
             st.write("الذكاء الاصطناعي غير مفعل أو لم يتم ضبط المفتاح.")
 
-    # 4. سجل التحليلات المحفوظة
-    if st.session_state.saved_signals:
-        st.divider()
-        st.subheader("🕒 آخر التحليلات المحفوظة")
-        for s in st.session_state.saved_signals[:5]:
-            st.caption(f"{s['time']} | {s['ticker']} | {s['sig']}")
+    # 4. عرض سجل التحليلات من قاعدة البيانات
+    st.divider()
+    st.subheader("🗄️ سجل التحليلات (من قاعدة البيانات)")
+    
+    try:
+        history_data = db.get_all_history()
+        if history_data:
+            # تحويل البيانات إلى DataFrame لتسهيل العرض
+            # الجدول في db.py: id, timestamp, ticker, timeframe, signal, signal_class, strength, price, sl, tp1, tp2, tp3, rr, ai_decision, ai_risk
+            cols = ['ID', 'Date', 'Ticker', 'TF', 'Signal', 'Class', 'Score', 'Price', 'SL', 'TP1', 'TP2', 'TP3', 'RR', 'AI_Dec', 'AI_Risk']
+            hist_df = pd.DataFrame(history_data, columns=cols)
+            
+            # عرض البيانات باختصار
+            st.dataframe(
+                hist_df[['Date', 'Ticker', 'Signal', 'Price', 'TP1', 'SL', 'RR']], 
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.caption("لا توجد تحليلات محفوظة في قاعدة البيانات بعد.")
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء جلب البيانات: {e}")
 
 else:
     # شاشة الترحيب عند عدم وجود تحليل
