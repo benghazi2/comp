@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,33 +11,45 @@ import base64
 import db  # استيراد ملف قاعدة البيانات
 
 # ============================================================
-# 1. إعداد الصفحة وتنسيق CSS (تم الإصلاح)
+# 1. إعداد الصفحة وتنسيق CSS (تم التعديل لإخفاء السايدبار)
 # ============================================================
 st.set_page_config(
     page_title="ProTrade Elite 5.0", 
     layout="wide", 
     page_icon="📈",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# تهيئة قاعدة البيانات عند بدء التشغيل
+# تهيئة قاعدة البيانات
 try:
     db.init_db()
 except Exception as e:
     st.error(f"خطأ في الاتصال بقاعدة البيانات: {e}")
 
-# CSS احترافي - إصلاح الشريط الجانبي وإخفاء الشعارات
+# CSS احترافي - إخفاء الشريط الجانبي وتنسيق القائمة العلوية
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
     
-    /* تعيين الخط العام وضبط تباعد الأسطر لمنع التداخل */
     html, body, [class*="css"] {
         font-family: 'Cairo', sans-serif;
         line-height: 1.6 !important; 
     }
     
-    /* إخفاء القائمة العلوية وأزرار Github و Deploy وشعار Streamlit */
+    /* ============================================================ */
+    /* إخفاء الشريط الجانبي تماماً (Sidebar Removal) */
+    /* ============================================================ */
+    [data-testid="stSidebar"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* إخفاء القائمة العلوية وأزرار Github و Deploy */
     [data-testid="stToolbar"] {
         visibility: hidden !important;
         display: none !important;
@@ -50,56 +60,18 @@ st.markdown("""
         z-index: 1;
     }
     
-    /* إخفاء الزخرفة العلونية */
-    [data-testid="stDecoration"] {
-        visibility: hidden !important;
-        display: none !important;
-    }
-
-    /* إخفاء الفوتر */
     footer {
         visibility: hidden !important;
         display: none !important;
     }
 
-    /* ============================================================ */
-    /* إصلاح الشريط الجانبي (Sidebar Fixes) */
-    /* ============================================================ */
-    
-    /* التأكد من ظهور قسم الشريط الجانبي */
-    section[data-testid="stSidebar"] {
-        background-color: #0e1117 !important;
-        border-right: 1px solid #1f2937;
-        width: 300px !important; /* عرض ثابت لضمان الظهور */
-        display: block !important;
-        visibility: visible !important;
-    }
-    
-    /* تحسين زر إغلاق/فتح الشريط الجانبي ليكون ظاهراً دائماً */
-    [data-testid="stSidebarCollapsedControl"] {
-        display: block !important;
-        visibility: visible !important;
-        color: #00ff88 !important;
-        background-color: rgba(14, 17, 23, 0.8);
-        border-radius: 50%;
-        padding: 4px;
-        z-index: 1000000; /* طبقة عالية جداً ليظهر فوق أي شيء */
-    }
-
-    /* تنسيق شريط التمرير */
-    ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #1a1a2e;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #0f3460;
-        border-radius: 4px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #e94560;
+    /* تنسيق القائمة المنسدلة (الهمبرغر) */
+    .streamlit-expanderHeader {
+        background-color: #111827;
+        color: #00ff88;
+        font-weight: bold;
+        border: 1px solid #374151;
+        border-radius: 8px;
     }
     
     /* البطاقات والتنسيقات */
@@ -146,21 +118,6 @@ st.markdown("""
         font-weight: 700;
     }
     
-    .rec-card {
-        background: #111827;
-        border-radius: 12px; 
-        padding: 20px; 
-        margin: 15px 0;
-        border: 1px solid #374151;
-        border-left: 5px solid; 
-        color: white;
-    }
-    
-    .rec-buy {border-color: #00ff88;}
-    .rec-sell {border-color: #ff4444;}
-    .rec-strong-buy {border-color: #00ff88; box-shadow: 0 0 15px rgba(0,255,136,0.1);}
-    .rec-strong-sell {border-color: #ff4444; box-shadow: 0 0 15px rgba(255,68,68,0.1);}
-    
     /* تحسينات للجوال */
     @media (max-width: 768px) {
         .main-signal {font-size: 18px; padding: 15px;}
@@ -170,7 +127,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 2. إدارة البيانات (Local Storage / Session)
+# 2. إدارة البيانات
 # ============================================================
 
 def init_session_state():
@@ -195,8 +152,6 @@ def init_session_state():
         'sig_cls': '',
         'comb': 0,
         'sigs': {},
-        'cons': 0,
-        'last_update': None,
     }
     
     for key, default_value in defaults.items():
@@ -206,7 +161,6 @@ def init_session_state():
 init_session_state()
 
 def export_data_to_json():
-    """تجهيز البيانات للتصدير كملف JSON"""
     data = {
         'analysis_history': st.session_state.analysis_history,
         'strong_signals': st.session_state.strong_signals,
@@ -217,7 +171,6 @@ def export_data_to_json():
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 def import_data_from_json(json_content):
-    """استيراد البيانات من ملف JSON"""
     try:
         data = json.loads(json_content)
         st.session_state.analysis_history = data.get('analysis_history', [])
@@ -230,7 +183,7 @@ def import_data_from_json(json_content):
         return False
 
 # ============================================================
-# 3. بيانات الأصول (Assets)
+# 3. بيانات الأصول
 # ============================================================
 FOREX_PAIRS = {
     "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X",
@@ -276,17 +229,16 @@ def to_tv_symbol(ticker):
     return f"NASDAQ:{ticker}"
 
 # ============================================================
-# 4. الذكاء الاصطناعي (AI)
+# 4. الذكاء الاصطناعي
 # ============================================================
 try:
-    # يفضل وضع التوكن في .streamlit/secrets.toml
     token = st.secrets.get("HF_TOKEN", "")
     client = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=token) if token else None
 except: 
     client = None
 
 # ============================================================
-# 5. دوال التحليل والمؤشرات
+# 5. دوال التحليل
 # ============================================================
 
 def safe_val(value, default=0.0):
@@ -295,28 +247,6 @@ def safe_val(value, default=0.0):
         v = float(value)
         return default if (np.isnan(v) or np.isinf(v)) else v
     except: return default
-
-def get_current_price(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        # محاولة سريعة
-        try:
-            p = stock.fast_info.get('lastPrice', None)
-            if p and p > 0: return float(p)
-        except: pass
-        
-        # محاولة عبر info
-        try:
-            info = stock.info
-            p = info.get('regularMarketPrice') or info.get('currentPrice')
-            if p and float(p) > 0: return float(p)
-        except: pass
-        
-        # محاولة أخيرة عبر التاريخ
-        hist = stock.history(period="1d")
-        if not hist.empty: return float(hist['Close'].iloc[-1])
-    except: pass
-    return None
 
 def fetch_data(ticker, tf_key, max_retries=2):
     ticker = ticker.strip().upper()
@@ -568,17 +498,72 @@ def get_ai_verdict(client, ticker, ts, fs, td, fd, curr):
     except: return None
 
 # ============================================================
-# 6. الشريط الجانبي (Sidebar)
+# 6. القائمة العلوية (بديل الشريط الجانبي)
 # ============================================================
 
-with st.sidebar:
-    st.markdown("## 📊 ProTrade Elite")
+st.title("ProTrade Elite 5.0 📊")
+
+# قائمة منسدلة كبديل للسايدبار
+with st.expander("☰ القائمة الرئيسية (الإعدادات والبيانات)", expanded=False):
     
-    # 1. قسم إدارة الذاكرة وقاعدة البيانات
-    with st.expander("💾 إدارة البيانات", expanded=False):
-        st.info(f"يتم حفظ التحليلات في: {db.DB_NAME}")
+    # تقسيم القائمة إلى أعمدة لترتيب العناصر
+    col_main, col_db = st.columns([2, 1])
+    
+    with col_main:
+        st.markdown("#### ⚙️ إعدادات التحليل")
+        c1, c2, c3 = st.columns(3)
         
-        # خيار الحفظ المحلي كملف JSON (كما كان سابقاً)
+        with c1:
+            asset_class = st.selectbox("نوع الأصل", ["فوركس", "عملات رقمية", "أسهم أمريكية"], index=0)
+        
+        with c2:
+            if asset_class == "فوركس":
+                pair = st.selectbox("اختر الزوج", list(FOREX_PAIRS.keys()))
+                ticker = FOREX_PAIRS[pair]
+            elif asset_class == "عملات رقمية":
+                pair = st.selectbox("اختر العملة", list(CRYPTO_PAIRS.keys()))
+                ticker = CRYPTO_PAIRS[pair]
+            else:
+                pair = st.selectbox("اختر السهم", list(STOCKS.keys()))
+                ticker = STOCKS[pair]
+                
+        with c3:
+            tf_label = st.selectbox("الإطار الزمني", list(TIMEFRAMES.keys()), index=6)
+            
+        if st.button("🚀 ابدأ التحليل", type="primary", use_container_width=True):
+            with st.spinner("جاري جلب البيانات وتحليل السوق..."):
+                df, info = fetch_data(ticker, tf_label)
+                if df is not None:
+                    df = calculate_indicators(df)
+                    ts, td, curr, sigs, _ = smart_technical_score(df)
+                    fs, fd = fundamental_score(info)
+                    sig, cls, comb = final_signal(ts, fs)
+                    tgts = calc_targets(curr, ts)
+                    
+                    ai_res = get_ai_verdict(client, ticker, ts, fs, td, fd, curr)
+                    
+                    # حفظ النتيجة في قاعدة البيانات
+                    try:
+                        db.save_analysis(ticker, tf_label, sig, cls, comb, safe_val(curr['Close']), tgts, ai_res)
+                    except Exception as e:
+                        st.warning(f"لم يتم الحفظ في قاعدة البيانات: {e}")
+
+                    # تحديث الحالة
+                    st.session_state.update({
+                        'ok': True, 'ticker': ticker, 'tf': tf_label,
+                        'data': df, 'curr': curr, 'info': info,
+                        'ts': ts, 'td': td, 'fs': fs, 'fd': fd,
+                        'sig': sig, 'sig_cls': cls, 'comb': comb,
+                        'tgts': tgts, 'ai_v': ai_res, 'sigs': sigs
+                    })
+                    st.rerun()
+                else:
+                    st.error("فشل في جلب البيانات، حاول مجدداً.")
+
+    with col_db:
+        st.markdown("#### 💾 إدارة البيانات")
+        st.caption(f"قاعدة البيانات: {db.DB_NAME}")
+        
         json_data = export_data_to_json()
         st.download_button(
             label="📥 نسخة احتياطية (JSON)",
@@ -588,81 +573,16 @@ with st.sidebar:
             use_container_width=True
         )
         
-        uploaded_file = st.file_uploader("📤 استرجاع JSON", type=['json'])
+        uploaded_file = st.file_uploader("استرجاع", type=['json'], label_visibility="collapsed")
         if uploaded_file:
             if import_data_from_json(uploaded_file.read().decode()):
-                st.success("✅ تم الاسترجاع!")
+                st.success("تم الاسترجاع!")
                 time.sleep(1)
                 st.rerun()
-
-    st.divider()
-
-    # 2. إعدادات التحليل
-    asset_class = st.selectbox("نوع الأصل", ["فوركس", "عملات رقمية", "أسهم أمريكية"], index=0)
-    
-    if asset_class == "فوركس":
-        pair = st.selectbox("اختر الزوج", list(FOREX_PAIRS.keys()))
-        ticker = FOREX_PAIRS[pair]
-    elif asset_class == "عملات رقمية":
-        pair = st.selectbox("اختر العملة", list(CRYPTO_PAIRS.keys()))
-        ticker = CRYPTO_PAIRS[pair]
-    else:
-        pair = st.selectbox("اختر السهم", list(STOCKS.keys()))
-        ticker = STOCKS[pair]
-        
-    tf_label = st.selectbox("الإطار الزمني", list(TIMEFRAMES.keys()), index=6)
-    
-    if st.button("🚀 تحليل الآن", type="primary", use_container_width=True):
-        with st.spinner("جاري جلب البيانات وتحليل السوق..."):
-            df, info = fetch_data(ticker, tf_label)
-            if df is not None:
-                df = calculate_indicators(df)
-                ts, td, curr, sigs, _ = smart_technical_score(df)
-                fs, fd = fundamental_score(info)
-                sig, cls, comb = final_signal(ts, fs)
-                tgts = calc_targets(curr, ts)
-                
-                ai_res = get_ai_verdict(client, ticker, ts, fs, td, fd, curr)
-                
-                # حفظ النتيجة في قاعدة البيانات
-                try:
-                    db.save_analysis(ticker, tf_label, sig, cls, comb, safe_val(curr['Close']), tgts, ai_res)
-                except Exception as e:
-                    st.warning(f"لم يتم الحفظ في قاعدة البيانات: {e}")
-
-                # تحديث الحالة (Session State) للعرض الحالي
-                st.session_state.update({
-                    'ok': True, 'ticker': ticker, 'tf': tf_label,
-                    'data': df, 'curr': curr, 'info': info,
-                    'ts': ts, 'td': td, 'fs': fs, 'fd': fd,
-                    'sig': sig, 'sig_cls': cls, 'comb': comb,
-                    'tgts': tgts, 'ai_v': ai_res, 'sigs': sigs
-                })
-                st.rerun()
-            else:
-                st.error("فشل في جلب البيانات، حاول مجدداً.")
-
-    st.divider()
-    st.info("نظام ProTrade v5.0 - التحليل الاحترافي")
 
 # ============================================================
 # 7. الواجهة الرئيسية
 # ============================================================
-
-# شريط الأسعار المتحرك (TradingView Widget)
-st.components.v1.html("""
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-  {
-  "symbols": [{"proName": "FX:EURUSD", "title": "EUR/USD"}, {"proName": "BITSTAMP:BTCUSD", "title": "BTC/USD"}, {"proName": "NASDAQ:AAPL", "title": "Apple"}],
-  "showSymbolLogo": true, "colorTheme": "dark", "isTransparent": true, "displayMode": "adaptive", "locale": "ar"
-  }
-  </script>
-</div>
-""", height=50)
-
-st.title("ProTrade Elite 5.0 📊")
 
 if st.session_state.get('ok'):
     # جلب البيانات من الحالة
@@ -695,7 +615,7 @@ if st.session_state.get('ok'):
     tab1, tab2, tab3 = st.tabs(["📉 الشارت", "📝 تفاصيل التحليل", "🤖 رأي الذكاء الاصطناعي"])
     
     with tab1:
-        # شارت TradingView
+        # شارت TradingView (تم الإبقاء عليه كما هو)
         tv_sym = to_tv_symbol(tkr)
         tv_int = TV_INTERVALS.get(st.session_state['tf'], "D")
         st.components.v1.html(f"""
@@ -743,7 +663,6 @@ if st.session_state.get('ok'):
         history_data = db.get_all_history()
         if history_data:
             # تحويل البيانات إلى DataFrame لتسهيل العرض
-            # الجدول في db.py: id, timestamp, ticker, timeframe, signal, signal_class, strength, price, sl, tp1, tp2, tp3, rr, ai_decision, ai_risk
             cols = ['ID', 'Date', 'Ticker', 'TF', 'Signal', 'Class', 'Score', 'Price', 'SL', 'TP1', 'TP2', 'TP3', 'RR', 'AI_Dec', 'AI_Risk']
             hist_df = pd.DataFrame(history_data, columns=cols)
             
@@ -763,6 +682,6 @@ else:
     st.markdown("""
     <div style="text-align:center; padding:50px; color:#888;">
         <h2>👋 مرحباً بك في ProTrade Elite</h2>
-        <p>اختر الأصل من القائمة الجانبية واضغط "تحليل الآن" للبدء</p>
+        <p>اضغط على القائمة أعلاه (☰) واختر "تحليل الآن" للبدء</p>
     </div>
     """, unsafe_allow_html=True)
