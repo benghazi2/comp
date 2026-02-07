@@ -4,13 +4,6 @@ from datetime import datetime
 DB_NAME = "protrade_data.db"
 
 
-def get_conn():
-    """إنشاء اتصال مع تفعيل row_factory"""
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
     """إنشاء جداول البيانات"""
     conn = sqlite3.connect(DB_NAME)
@@ -61,16 +54,13 @@ def init_db():
     conn.close()
 
 
-# ============================================================
-# دوال التحليل العادي
-# ============================================================
+# --- دوال التحليل العادي ---
 
 def save_analysis(ticker, tf, signal, sig_cls, strength, price, targets, ai_data):
     """حفظ تحليل فني في السجل"""
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-
         ai_dec = 'N/A'
         ai_risk = 'N/A'
         if ai_data and isinstance(ai_data, dict):
@@ -85,17 +75,14 @@ def save_analysis(ticker, tf, signal, sig_cls, strength, price, targets, ai_data
         ''', (
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ticker, tf, signal, sig_cls, strength, price,
-            targets.get('sl', 0),
-            targets.get('tp1', 0),
-            targets.get('tp2', 0),
-            targets.get('tp3', 0),
-            targets.get('rr', 0),
-            ai_dec, ai_risk
+            targets.get('sl', 0), targets.get('tp1', 0),
+            targets.get('tp2', 0), targets.get('tp3', 0),
+            targets.get('rr', 0), ai_dec, ai_risk
         ))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"خطأ في حفظ التحليل: {e}")
+        print(f"Error saving analysis: {e}")
 
 
 def get_all_history():
@@ -115,9 +102,7 @@ def get_all_history():
         return []
 
 
-# ============================================================
-# دوال التوصيات
-# ============================================================
+# --- دوال التوصيات ---
 
 def add_signal(ticker, name, direction, entry, tp1, tp2, sl, strength):
     """إضافة توصية جديدة مع التحقق من عدم التكرار"""
@@ -130,8 +115,7 @@ def add_signal(ticker, name, direction, entry, tp1, tp2, sl, strength):
             "SELECT id FROM signals_tracking WHERE ticker = ? AND status = 'active'",
             (ticker,)
         )
-        existing = c.fetchone()
-        if existing:
+        if c.fetchone():
             conn.close()
             return False
 
@@ -148,82 +132,90 @@ def add_signal(ticker, name, direction, entry, tp1, tp2, sl, strength):
         conn.commit()
         conn.close()
         return True
-
     except Exception as e:
-        print(f"خطأ في إضافة التوصية: {e}")
+        print(f"Error adding signal: {e}")
         return False
 
 
 def get_active_signals():
     """جلب التوصيات النشطة كقائمة من القواميس"""
     try:
-        conn = get_conn()
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute(
-            "SELECT * FROM signals_tracking WHERE status = 'active' ORDER BY strength DESC"
+            "SELECT id, timestamp, ticker, asset_name, direction, entry_price, "
+            "current_price, tp1, tp2, sl, strength, status, progress, pnl_pct "
+            "FROM signals_tracking WHERE status = 'active' ORDER BY strength DESC"
         )
+        columns = [
+            'id', 'timestamp', 'ticker', 'asset_name', 'direction',
+            'entry_price', 'current_price', 'tp1', 'tp2', 'sl',
+            'strength', 'status', 'progress', 'pnl_pct'
+        ]
         rows = c.fetchall()
         conn.close()
 
-        # تحويل Row objects إلى قواميس عادية
         result = []
         for row in rows:
-            result.append({
-                'id': row['id'],
-                'timestamp': row['timestamp'],
-                'ticker': row['ticker'],
-                'asset_name': row['asset_name'],
-                'direction': row['direction'],
-                'entry_price': row['entry_price'] or 0,
-                'current_price': row['current_price'] or 0,
-                'tp1': row['tp1'] or 0,
-                'tp2': row['tp2'] or 0,
-                'sl': row['sl'] or 0,
-                'strength': row['strength'] or 0,
-                'status': row['status'] or 'active',
-                'progress': row['progress'] or 0,
-                'pnl_pct': row['pnl_pct'] or 0
-            })
+            d = {}
+            for i, col_name in enumerate(columns):
+                val = row[i]
+                # التأكد أن القيم الرقمية ليست None
+                if col_name in ('entry_price', 'current_price', 'tp1', 'tp2',
+                                'sl', 'strength', 'progress', 'pnl_pct'):
+                    if val is None:
+                        val = 0.0
+                    else:
+                        val = float(val)
+                elif val is None:
+                    val = ''
+                d[col_name] = val
+            result.append(d)
         return result
 
     except Exception as e:
-        print(f"خطأ في جلب التوصيات النشطة: {e}")
+        print(f"Error getting active signals: {e}")
         return []
 
 
 def get_closed_signals():
     """جلب التوصيات المنتهية كقائمة من القواميس"""
     try:
-        conn = get_conn()
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute(
-            "SELECT * FROM signals_tracking WHERE status != 'active' ORDER BY timestamp DESC LIMIT 50"
+            "SELECT id, timestamp, ticker, asset_name, direction, entry_price, "
+            "current_price, tp1, tp2, sl, strength, status, progress, pnl_pct "
+            "FROM signals_tracking WHERE status != 'active' "
+            "ORDER BY timestamp DESC LIMIT 50"
         )
+        columns = [
+            'id', 'timestamp', 'ticker', 'asset_name', 'direction',
+            'entry_price', 'current_price', 'tp1', 'tp2', 'sl',
+            'strength', 'status', 'progress', 'pnl_pct'
+        ]
         rows = c.fetchall()
         conn.close()
 
         result = []
         for row in rows:
-            result.append({
-                'id': row['id'],
-                'timestamp': row['timestamp'],
-                'ticker': row['ticker'],
-                'asset_name': row['asset_name'],
-                'direction': row['direction'],
-                'entry_price': row['entry_price'] or 0,
-                'current_price': row['current_price'] or 0,
-                'tp1': row['tp1'] or 0,
-                'tp2': row['tp2'] or 0,
-                'sl': row['sl'] or 0,
-                'strength': row['strength'] or 0,
-                'status': row['status'] or 'closed',
-                'progress': row['progress'] or 0,
-                'pnl_pct': row['pnl_pct'] or 0
-            })
+            d = {}
+            for i, col_name in enumerate(columns):
+                val = row[i]
+                if col_name in ('entry_price', 'current_price', 'tp1', 'tp2',
+                                'sl', 'strength', 'progress', 'pnl_pct'):
+                    if val is None:
+                        val = 0.0
+                    else:
+                        val = float(val)
+                elif val is None:
+                    val = ''
+                d[col_name] = val
+            result.append(d)
         return result
 
     except Exception as e:
-        print(f"خطأ في جلب التوصيات المنتهية: {e}")
+        print(f"Error getting closed signals: {e}")
         return []
 
 
@@ -240,4 +232,4 @@ def update_signal_status(signal_id, current_price, status, progress, pnl):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"خطأ في تحديث التوصية: {e}")
+        print(f"Error updating signal: {e}")
