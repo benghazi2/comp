@@ -1,3 +1,4 @@
+--- START OF FILE app.py ---
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -48,7 +49,7 @@ HACK_CODE = """
 components.html(HACK_CODE, height=0, width=0)
 
 # ============================================================
-# CSS داخلي (خط دفاع ثاني)
+# CSS داخلي
 # ============================================================
 st.markdown("""
 <style>
@@ -130,7 +131,7 @@ st.markdown("""
 # ============================================================
 def init_session_state():
     defaults = {
-        'messages': [], 'current_view': 'analysis',
+        'messages': [], 'current_view': 'signals', # الافتراضي التوصيات
         'scan_running': False, 'scan_complete': False,
         'scan_results': 0, 'chart_fullscreen': False,
         'chart_symbol': 'FX:EURUSD', 'chart_interval': 'D',
@@ -1003,27 +1004,17 @@ if missing:
     st.error(f"⚠️ db.py ناقص: {', '.join(missing)}")
     st.stop()
 
-# شريط حالة المسح مع التحديث التلقائي
+# 🔴🔴 التصحيح هنا: حذفنا كود الانتظار (Sleep) من هنا 🔴🔴
+# فقط نعرض حالة بسيطة في الأعلى (شريط ثابت) بدون إعادة تحميل للصفحة
 scan_st = db.get_scan_status()
-if scan_st:
-    if scan_st['is_running']:
-        # عرض الحالة
-        st.markdown(f"""
-        <div class="scan-banner">
-            <span>🔄 جاري المسح: {scan_st['current_asset']}
-            ({scan_st['scanned_assets']}/{scan_st['total_assets']})</span>
-            <span>وجد: {scan_st['found_signals']} إشارة</span>
-        </div>""", unsafe_allow_html=True)
-        st.progress(scan_st['progress'] / 100)
-        
-        # 🔥🔥 التحديث التلقائي هنا: انتظر قليلاً ثم أعد تحميل الصفحة
-        time.sleep(3) 
-        st.rerun()
-        
-    elif scan_st['found_signals'] > 0 and st.session_state.get('scan_running'):
-        st.session_state.scan_running = False
-        st.session_state.scan_complete = True
-        st.session_state.scan_results = scan_st['found_signals']
+if scan_st and scan_st['is_running']:
+    st.markdown(f"""
+    <div class="scan-banner">
+        <span>🔄 جاري المسح في الخلفية: {scan_st['current_asset']}
+        ({scan_st['scanned_assets']}/{scan_st['total_assets']})</span>
+        <small>يمكنك التنقل بحرية</small>
+    </div>""", unsafe_allow_html=True)
+    # لا يوجد st.progress هنا لمنع التجميد في الصفحات الأخرى
 
 if st.session_state.get('scan_complete'):
     st.markdown(f"""
@@ -1054,10 +1045,17 @@ with st.expander("☰ القائمة", expanded=False):
 
 
 # ============================================================
-# 6. التوصيات
+# 6. التوصيات (هنا فقط نضع منطق التحديث التلقائي)
 # ============================================================
 if st.session_state.current_view == "signals":
     st.header("📋 التوصيات الذكية")
+
+    # 🔥🔥 منطق التحديث التلقائي - حصرياً في هذه الصفحة 🔥🔥
+    if scan_st and scan_st['is_running']:
+        st.info("⚠️ جاري تحديث النتائج تلقائياً...")
+        st.progress(scan_st['progress'] / 100)
+        time.sleep(2) # انتظار قصير
+        st.rerun()    # إعادة تحميل الصفحة (هنا فقط)
 
     with st.expander("⚙️ إعدادات المسح", expanded=True):
         sc1, sc2, sc3 = st.columns(3)
@@ -1115,7 +1113,7 @@ if st.session_state.current_view == "signals":
                 st.session_state.scan_running = True
                 ai_token = st.secrets.get("HF_TOKEN", "")
                 
-                # 🔥🔥🔥 التعديل هنا: daemon=False للاستمرار في الخلفية 🔥🔥🔥
+                # بدء المسح في الخلفية
                 scan_thread = threading.Thread(
                     target=background_scan,
                     args=(assets, scan_tf, ai_token),
@@ -1123,8 +1121,8 @@ if st.session_state.current_view == "signals":
                 )
                 scan_thread.start()
                 
-                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل في الخلفية. يمكنك التنقل بحرية وسيستمر المسح.")
-                time.sleep(2)
+                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل. انتقل لأي صفحة تريد، وسيستمر العمل.")
+                time.sleep(1)
                 st.rerun()
 
     if update_btn:
