@@ -39,36 +39,31 @@ HACK_CODE = """
             [data-testid="stStatusWidget"] { display: none !important; }
             footer { display: none !important; }
             .main .block-container { padding-top: 1rem !important; }
+            section[data-testid="stSidebar"] { display: none !important; }
         `;
         parentDoc.head.appendChild(style);
     } catch (e) {
-        console.log("Failed to inject CSS into parent window: " + e);
+        console.log("Failed to inject CSS: " + e);
     }
 </script>
 """
 components.html(HACK_CODE, height=0, width=0)
 
 # ============================================================
-# CSS داخلي
+# إخفاء كل عناصر Streamlit و GitHub (CSS داخلي)
 # ============================================================
-st.markdown("""
+HIDE_STREAMLIT = """
 <style>
-    [data-testid="stAppViewContainer"], .stApp {
-        background-color: #ffffff !important;
-        color: #000000 !important;
-    }
-    header {visibility: hidden !important;}
-    footer {visibility: hidden !important;}
-    #MainMenu {visibility: hidden !important;}
-    .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6, span, li {
-        color: #262730 !important;
-    }
-    .rec-card, .rec-card * { color: white !important; }
-    .scan-banner, .scan-banner * { color: inherit !important; }
-    .main-signal, .main-signal * { color: white !important; }
-    [data-testid="stSidebar"] { display: none !important; }
+header[data-testid="stHeader"] {display: none !important;}
+footer {display: none !important;}
+[data-testid="stDecoration"] {display: none !important;}
+.stAppDeployButton {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+[data-testid="stSidebar"] {display: none !important;}
+.main .block-container {padding-top: 1rem !important;}
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(HIDE_STREAMLIT, unsafe_allow_html=True)
 
 try:
     db.init_db()
@@ -131,7 +126,7 @@ st.markdown("""
 # ============================================================
 def init_session_state():
     defaults = {
-        'messages': [], 'current_view': 'signals', # الافتراضي التوصيات
+        'messages': [], 'current_view': 'analysis',
         'scan_running': False, 'scan_complete': False,
         'scan_results': 0, 'chart_fullscreen': False,
         'chart_symbol': 'FX:EURUSD', 'chart_interval': 'D',
@@ -214,12 +209,13 @@ def to_tv_symbol(ticker):
     return f"NASDAQ:{ticker}"
 
 # ============================================================
-# 3. AI
+# 3. AI (كما في الكود الذي ألصقته: 72B)
 # ============================================================
 client = None
 try:
     token = st.secrets.get("HF_TOKEN", "")
     if token:
+        # أنت طلبت الحفاظ على المنطق من كودك السابق، والذي يستخدم هذا النموذج
         client = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=token)
 except Exception:
     client = None
@@ -1004,17 +1000,21 @@ if missing:
     st.error(f"⚠️ db.py ناقص: {', '.join(missing)}")
     st.stop()
 
-# 🔴🔴 التصحيح هنا: حذفنا كود الانتظار (Sleep) من هنا 🔴🔴
-# فقط نعرض حالة بسيطة في الأعلى (شريط ثابت) بدون إعادة تحميل للصفحة
+# شريط حالة المسح
 scan_st = db.get_scan_status()
-if scan_st and scan_st['is_running']:
-    st.markdown(f"""
-    <div class="scan-banner">
-        <span>🔄 جاري المسح في الخلفية: {scan_st['current_asset']}
-        ({scan_st['scanned_assets']}/{scan_st['total_assets']})</span>
-        <small>يمكنك التنقل بحرية</small>
-    </div>""", unsafe_allow_html=True)
-    # لا يوجد st.progress هنا لمنع التجميد في الصفحات الأخرى
+if scan_st:
+    if scan_st['is_running']:
+        st.markdown(f"""
+        <div class="scan-banner">
+            <span>🔄 جاري المسح: {scan_st['current_asset']}
+            ({scan_st['scanned_assets']}/{scan_st['total_assets']})</span>
+            <span>وجد: {scan_st['found_signals']} إشارة</span>
+        </div>""", unsafe_allow_html=True)
+        st.progress(scan_st['progress'] / 100)
+    elif scan_st['found_signals'] > 0 and st.session_state.get('scan_running'):
+        st.session_state.scan_running = False
+        st.session_state.scan_complete = True
+        st.session_state.scan_results = scan_st['found_signals']
 
 if st.session_state.get('scan_complete'):
     st.markdown(f"""
@@ -1045,17 +1045,10 @@ with st.expander("☰ القائمة", expanded=False):
 
 
 # ============================================================
-# 6. التوصيات (هنا فقط نضع منطق التحديث التلقائي)
+# 6. التوصيات
 # ============================================================
 if st.session_state.current_view == "signals":
     st.header("📋 التوصيات الذكية")
-
-    # 🔥🔥 منطق التحديث التلقائي - حصرياً في هذه الصفحة 🔥🔥
-    if scan_st and scan_st['is_running']:
-        st.info("⚠️ جاري تحديث النتائج تلقائياً...")
-        st.progress(scan_st['progress'] / 100)
-        time.sleep(2) # انتظار قصير
-        st.rerun()    # إعادة تحميل الصفحة (هنا فقط)
 
     with st.expander("⚙️ إعدادات المسح", expanded=True):
         sc1, sc2, sc3 = st.columns(3)
@@ -1113,16 +1106,16 @@ if st.session_state.current_view == "signals":
                 st.session_state.scan_running = True
                 ai_token = st.secrets.get("HF_TOKEN", "")
                 
-                # بدء المسح في الخلفية
+                # استخدام Thread مع daemon=True (كما في الكود الأصلي الذي طلبته)
                 scan_thread = threading.Thread(
                     target=background_scan,
                     args=(assets, scan_tf, ai_token),
-                    daemon=False 
+                    daemon=True
                 )
                 scan_thread.start()
                 
-                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل. انتقل لأي صفحة تريد، وسيستمر العمل.")
-                time.sleep(1)
+                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل في الخلفية. تنقل بحرية!")
+                time.sleep(2)
                 st.rerun()
 
     if update_btn:
