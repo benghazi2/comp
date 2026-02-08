@@ -12,137 +12,106 @@ import importlib
 import threading
 import db
 
+# إعادة تحميل قاعدة البيانات للتأكد من التحديثات
 importlib.reload(db)
 
 # ============================================================
-# 1. الإعداد
+# 1. إعداد الصفحة (يجب أن يكون أول سطر)
 # ============================================================
 st.set_page_config(page_title="ProTrade Elite 5.0", layout="wide",
                    page_icon="📈", initial_sidebar_state="collapsed")
 
 # ============================================================
-# 🔥 الحل النهائي: حقن JavaScript للمراقبة المستمرة (MutationObserver)
+# 🔥 الحل النهائي: القفز للنافذة الأم (Parent Window Injection)
 # ============================================================
-# هذا الكود بلغة HTML/JS سيتم زرعه في المتصفح ليراقب أي تغيير
-# ويحذف الأزرار فور ظهورها
+# هذا الكود يستخدم الجافاسكريبت للوصول إلى "نافذة المتصفح الرئيسية"
+# وحقن كود الإخفاء فيها مباشرة، وليس داخل التطبيق فقط.
 # ============================================================
-
-KILL_THE_BUTTONS_HTML = """
+HACK_CODE = """
 <script>
-    // هذه الوظيفة تقوم بالبحث عن العناصر المزعجة وحذفها
-    function removeUnwantedElements() {
-        // قائمة بكل المعرفات والكلاسات المحتملة لأزرار التحكم
-        const selectors = [
-            'header[data-testid="stHeader"]',
-            '[data-testid="stToolbar"]',
-            '[data-testid="stDecoration"]',
-            '[data-testid="stStatusWidget"]',
-            '[data-testid="manage-app-button"]', // الزر الذي أشرت إليه
-            '.stAppDeployButton',                // زر النشر
-            'div[class*="viewerBadge"]',         // شعار الاستضافة
-            'footer',
-            '#MainMenu',
-            '.stDeployButton'
-        ];
-
-        selectors.forEach(selector => {
-            const elements = document.querySelectorAll(selector);
-            elements.forEach(el => {
-                // ليس فقط إخفاء، بل حذف من الوجود
-                el.remove();
-                // احتياطاً، إذا عاد، نخفيه
-                el.style.display = 'none !important';
-                el.style.opacity = '0 !important';
-            });
-        });
+    // محاولة الوصول إلى النافذة الأم (Parent Window)
+    try {
+        var parentDoc = window.parent.document;
         
-        // محاولة استهداف الزر السفلي العائم بشكل خاص عبر النص الداخلي إذا لم ينجح المعرف
-        const buttons = document.querySelectorAll('button');
-        buttons.forEach(btn => {
-            if (btn.innerText.includes('Manage app') || btn.innerText.includes('Deploy')) {
-                btn.closest('div').style.display = 'none';
-            }
-        });
+        // إنشاء عنصر تنسيق (Style) جديد
+        var style = parentDoc.createElement('style');
+        style.innerHTML = `
+            /* إخفاء الهيدر بالكامل */
+            header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
+            
+            /* إخفاء زر النشر والتحكم (الزر الأحمر/الأبيض) */
+            .stAppDeployButton { display: none !important; }
+            [data-testid="manage-app-button"] { display: none !important; }
+            
+            /* إخفاء الشريط الملون العلوي */
+            [data-testid="stDecoration"] { display: none !important; }
+            
+            /* إخفاء أيقونة الحالة (Running Man) */
+            [data-testid="stStatusWidget"] { display: none !important; }
+            
+            /* إخفاء الفوتر */
+            footer { display: none !important; }
+            
+            /* رفع المحتوى للأعلى ليملأ مكان الهيدر المختفي */
+            .main .block-container { padding-top: 1rem !important; }
+        `;
+        
+        // زرع التنسيق في رأس الصفحة الأم
+        parentDoc.head.appendChild(style);
+        
+    } catch (e) {
+        console.log("Failed to inject CSS into parent window: " + e);
     }
-
-    // 1. التنفيذ الفوري
-    removeUnwantedElements();
-
-    // 2. مراقبة الصفحة باستمرار (MutationObserver)
-    // إذا قامت Streamlit بإضافة الزر بعد ثانية، سنكتشفه ونحذفه
-    const observer = new MutationObserver((mutations) => {
-        removeUnwantedElements();
-    });
-
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-    
-    // 3. تأكيد الحذف كل نصف ثانية (كخط دفاع أخير)
-    setInterval(removeUnwantedElements, 500);
 </script>
 """
-
-# زرع الكود في الصفحة بارتفاع 0 حتى لا يؤثر على التصميم
-components.html(KILL_THE_BUTTONS_HTML, height=0, width=0)
+# تنفيذ الكود المخفي
+components.html(HACK_CODE, height=0, width=0)
 
 
 # ============================================================
-# CSS إضافي للتأكد (Double Check)
+# CSS داخلي (خط دفاع ثاني)
 # ============================================================
 st.markdown("""
 <style>
-    /* إخفاء الهيكل الأساسي للأدوات */
-    [data-testid="stHeader"],
-    [data-testid="stToolbar"],
-    .stApp > header {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-    }
-    
-    /* إخفاء المنطقة السفلية بالكامل إذا كانت تحتوي على أزرار عائمة */
-    .stApp > div:has([data-testid="manage-app-button"]) {
-        display: none !important;
-    }
-    
     /* إجبار الخلفية البيضاء */
-    [data-testid="stAppViewContainer"] {
+    [data-testid="stAppViewContainer"], .stApp {
         background-color: #ffffff !important;
+        color: #000000 !important;
     }
+    
+    /* إخفاء العناصر الداخلية */
+    header {visibility: hidden !important;}
+    footer {visibility: hidden !important;}
+    #MainMenu {visibility: hidden !important;}
     
     /* تنسيق النصوص */
-    h1, h2, h3, p, span, div {
-        color: #000000;
+    .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6, span, li {
+        color: #262730 !important;
     }
     
-    /* استثناء البطاقات السوداء */
-    .rec-card, .rec-card * {
-        color: white !important;
-    }
+    /* استثناءات البطاقات لتبقى جميلة */
+    .rec-card, .rec-card * { color: white !important; }
+    .scan-banner, .scan-banner * { color: inherit !important; }
+    .main-signal, .main-signal * { color: white !important; }
     
-    .scan-banner, .scan-banner * {
-        color: inherit !important;
-    }
+    /* إخفاء القائمة الجانبية */
+    [data-testid="stSidebar"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
-
 
 try:
     db.init_db()
 except Exception as e:
-    st.error(f"خطأ: {e}")
+    st.error(f"خطأ في قاعدة البيانات: {e}")
 
 # ============================================================
-# CSS التنسيق (البطاقات والألوان)
+# CSS التنسيقات الجمالية (البطاقات والأزرار)
 # ============================================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
     html, body, [class*="css"] {
         font-family: 'Cairo', sans-serif;
-        line-height: 1.6 !important;
     }
     .main-signal {
         padding: 25px; border-radius: 15px; text-align: center;
@@ -160,34 +129,34 @@ st.markdown("""
         background: #1f2937; border-radius: 12px; padding: 15px; margin: 10px 0;
         border: 1px solid #374151; color: white !important;
     }
-    .rec-card h3, .rec-card span {
+    .rec-card h3, .rec-card span, .rec-card small {
         color: white !important;
     }
     
     .stChatMessage {direction: rtl;}
     .scan-banner {
-        background: linear-gradient(90deg, #1a1a2e, #16213e);
-        border: 1px solid #0f3460; border-radius: 10px;
+        background: linear-gradient(90deg, #f1f5f9, #e2e8f0);
+        border: 1px solid #cbd5e1; border-radius: 10px;
         padding: 10px 20px; margin: 10px 0;
         display: flex; align-items: center; justify-content: space-between;
-        color: #e94560 !important; font-weight: bold;
+        color: #0f172a !important; font-weight: bold;
         animation: pulse 2s infinite;
     }
     @keyframes pulse {
-        0%, 100% { border-color: #0f3460; }
-        50% { border-color: #e94560; }
+        0%, 100% { border-color: #cbd5e1; }
+        50% { border-color: #94a3b8; }
     }
     .scan-done-banner {
-        background: linear-gradient(90deg, #0a3d0a, #065f46);
-        border: 1px solid #00ff88; border-radius: 10px;
-        padding: 12px 20px; margin: 10px 0; color: #00ff88 !important;
+        background: linear-gradient(90deg, #dcfce7, #bbf7d0);
+        border: 1px solid #86efac; border-radius: 10px;
+        padding: 12px 20px; margin: 10px 0; color: #166534 !important;
         font-weight: bold; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 2. البيانات
+# 2. البيانات والجلسة
 # ============================================================
 def init_session_state():
     defaults = {
