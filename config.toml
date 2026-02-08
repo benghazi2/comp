@@ -1,0 +1,18 @@
+[server]
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"             # <--- هذا هو المفتاح لتحويل الموقع للأبيض
+primaryColor = "#00ff88"   # لون الأزرار (يمكنك تغييره للأزرق #1f77b4 ليكون أكثر رسمية)
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+
+[client]
+showSidebarNavigation = false
+toolbarMode = "viewer"     # يخفي خيارات المطورين العلوية
+showErrorDetails = false
