@@ -1,335 +1,239 @@
-import sqlite3
-import os
+import streamlit as st
+import firebase_admin
+from firebase_admin import credentials, db
 from datetime import datetime
 
-DB_NAME = "protrade_data.db"
-DB_VERSION = 4
-
-
+# ============================================================
+# إعداد الاتصال بقاعدة البيانات (Firebase)
+# ============================================================
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
+    # التحقق مما إذا كان التطبيق متصلاً بالفعل لتجنب الأخطاء عند إعادة التشغيل
+    if not firebase_admin._apps:
+        try:
+            # جلب بيانات الاعتماد من secrets
+            # ملاحظة: تأكد من أن ملف secrets.toml يحتوي على قسم [firebase]
+            key_dict = dict(st.secrets["firebase"])
+            
+            # استخراج رابط قاعدة البيانات (يجب أن يكون موجوداً في secrets)
+            db_url = key_dict.pop('database_url', None)
+            
+            if not db_url:
+                st.error("⚠️ database_url مفقود في ملف secrets")
+                return
 
-    c.execute('''CREATE TABLE IF NOT EXISTS db_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )''')
-    c.execute("SELECT value FROM db_meta WHERE key='version'")
-    row = c.fetchone()
-    current_version = int(row[0]) if row else 0
+            # إنشاء شهادة الاعتماد
+            cred = credentials.Certificate(key_dict)
+            
+            # تهيئة التطبيق
+            firebase_admin.initialize_app(cred, {
+                'databaseURL': db_url
+            })
+        except Exception as e:
+            st.error(f"فشل الاتصال بقاعدة بيانات Firebase: {e}")
 
-    if current_version < DB_VERSION:
-        c.execute("DROP TABLE IF EXISTS signals_tracking")
-        c.execute("DROP TABLE IF EXISTS analysis_history")
-        c.execute("DROP TABLE IF EXISTS scan_status")
-        c.execute("DELETE FROM db_meta")
-        c.execute("INSERT INTO db_meta (key, value) VALUES ('version', ?)",
-                  (str(DB_VERSION),))
-        conn.commit()
+# دالة مساعدة لاختصار الكود
+def _ref(path):
+    return db.reference(path)
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            ticker TEXT,
-            timeframe TEXT,
-            signal TEXT,
-            signal_class TEXT,
-            strength REAL,
-            price REAL,
-            sl REAL,
-            tp1 REAL,
-            tp2 REAL,
-            tp3 REAL,
-            rr REAL,
-            ai_decision TEXT,
-            ai_risk TEXT,
-            technical_score REAL DEFAULT 0,
-            fundamental_score REAL DEFAULT 0,
-            news_score REAL DEFAULT 0,
-            ai_score REAL DEFAULT 0,
-            filters_detail TEXT DEFAULT '',
-            ai_reasoning TEXT DEFAULT ''
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS signals_tracking (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            ticker TEXT,
-            asset_name TEXT,
-            direction TEXT,
-            entry_price REAL,
-            current_price REAL,
-            tp1 REAL,
-            tp2 REAL,
-            tp3 REAL,
-            sl REAL,
-            strength REAL,
-            status TEXT DEFAULT 'active',
-            progress REAL DEFAULT 0,
-            pnl_pct REAL DEFAULT 0,
-            timeframe TEXT DEFAULT '',
-            technical_score REAL DEFAULT 0,
-            fundamental_score REAL DEFAULT 0,
-            news_score REAL DEFAULT 0,
-            ai_score REAL DEFAULT 0,
-            filters_detail TEXT DEFAULT '',
-            ai_reasoning TEXT DEFAULT '',
-            hit_time TEXT DEFAULT '',
-            hit_price REAL DEFAULT 0
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS scan_status (
-            id INTEGER PRIMARY KEY,
-            is_running INTEGER DEFAULT 0,
-            progress REAL DEFAULT 0,
-            total_assets INTEGER DEFAULT 0,
-            scanned_assets INTEGER DEFAULT 0,
-            found_signals INTEGER DEFAULT 0,
-            current_asset TEXT DEFAULT '',
-            start_time TEXT DEFAULT '',
-            end_time TEXT DEFAULT ''
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
-
-
+# ============================================================
+# 1. سجل التحليل (Analysis History)
+# ============================================================
 def save_analysis(ticker, tf, signal, sig_cls, strength, price, targets,
                   ai_data, tech_score=0, fund_score=0, news_score=0,
                   ai_score=0, filters_detail='', ai_reasoning=''):
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
+        ref = _ref('analysis_history')
+        
+        # استخراج بيانات AI بأمان
         ai_dec = 'N/A'
         ai_risk = 'N/A'
-        if ai_data and isinstance(ai_data, dict):
+        if isinstance(ai_data, dict):
             ai_dec = ai_data.get('final_decision', 'N/A')
             ai_risk = ai_data.get('risk_level', 'N/A')
-        c.execute('''
-            INSERT INTO analysis_history (
-                timestamp, ticker, timeframe, signal, signal_class, strength,
-                price, sl, tp1, tp2, tp3, rr, ai_decision, ai_risk,
-                technical_score, fundamental_score, news_score, ai_score,
-                filters_detail, ai_reasoning
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ''', (
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ticker, tf, signal, sig_cls, strength, price,
-            targets.get('sl', 0), targets.get('tp1', 0),
-            targets.get('tp2', 0), targets.get('tp3', 0),
-            targets.get('rr', 0), ai_dec, ai_risk,
-            float(tech_score), float(fund_score), float(news_score),
-            float(ai_score), str(filters_detail), str(ai_reasoning)
-        ))
-        conn.commit()
-        conn.close()
+
+        data = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'ticker': str(ticker),
+            'timeframe': str(tf),
+            'signal': str(signal),
+            'signal_class': str(sig_cls),
+            'strength': float(strength),
+            'price': float(price),
+            'sl': float(targets.get('sl', 0)),
+            'tp1': float(targets.get('tp1', 0)),
+            'tp2': float(targets.get('tp2', 0)),
+            'tp3': float(targets.get('tp3', 0)),
+            'rr': float(targets.get('rr', 0)),
+            'ai_decision': str(ai_dec),
+            'ai_risk': str(ai_risk),
+            'technical_score': float(tech_score),
+            'fundamental_score': float(fund_score),
+            'news_score': float(news_score),
+            'ai_score': float(ai_score),
+            'filters_detail': str(filters_detail),
+            'ai_reasoning': str(ai_reasoning)
+        }
+        ref.push(data)
     except Exception as e:
         print(f"Error save_analysis: {e}")
 
-
 def get_all_history():
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('SELECT * FROM analysis_history ORDER BY id DESC')
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        ref = _ref('analysis_history')
+        # جلب آخر 50 سجل فقط لتحسين الأداء
+        snapshot = ref.order_by_key().limit_to_last(50).get()
+        if not snapshot: return []
+        
+        rows = []
+        for key, val in snapshot.items():
+            val['id'] = key
+            rows.append(val)
+        # ترتيب النتائج من الأحدث للأقدم
+        return sorted(rows, key=lambda x: x.get('timestamp', ''), reverse=True)
     except Exception:
         return []
 
-
+# ============================================================
+# 2. تتبع التوصيات (Signals Tracking)
+# ============================================================
 def add_signal(ticker, name, direction, entry, tp1, tp2, tp3, sl,
                strength, timeframe, technical_score, fundamental_score,
                news_score, ai_score, filters_detail, ai_reasoning):
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute(
-            "SELECT id FROM signals_tracking WHERE ticker=? AND status='active'",
-            (ticker,)
-        )
-        if c.fetchone():
-            conn.close()
-            return False
-        c.execute('''
-            INSERT INTO signals_tracking (
-                timestamp, ticker, asset_name, direction, entry_price,
-                current_price, tp1, tp2, tp3, sl, strength, status,
-                progress, pnl_pct, timeframe, technical_score,
-                fundamental_score, news_score, ai_score,
-                filters_detail, ai_reasoning, hit_time, hit_price
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'active',0.0,0.0,?,?,?,?,?,?,?,'',0)
-        ''', (
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            str(ticker), str(name), str(direction),
-            float(entry), float(entry),
-            float(tp1), float(tp2), float(tp3), float(sl),
-            float(strength), str(timeframe),
-            float(technical_score), float(fundamental_score),
-            float(news_score), float(ai_score),
-            str(filters_detail), str(ai_reasoning)
-        ))
-        conn.commit()
-        conn.close()
+        ref = _ref('signals_tracking')
+        
+        # التحقق من وجود توصية نشطة لنفس الأصل لمنع التكرار
+        # Firebase لا يدعم الاستعلامات المعقدة بسهولة، لذا نجلب النشطين ونتحقق يدوياً
+        actives = ref.order_by_child('status').equal_to('active').get()
+        if actives:
+            for _, val in actives.items():
+                if val.get('ticker') == str(ticker):
+                    return False # موجودة بالفعل
+
+        data = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
+            'ticker': str(ticker),
+            'asset_name': str(name),
+            'direction': str(direction),
+            'entry_price': float(entry),
+            'current_price': float(entry),
+            'tp1': float(tp1),
+            'tp2': float(tp2),
+            'tp3': float(tp3),
+            'sl': float(sl),
+            'strength': float(strength),
+            'status': 'active',
+            'progress': 0.0,
+            'pnl_pct': 0.0,
+            'timeframe': str(timeframe),
+            'technical_score': float(technical_score),
+            'fundamental_score': float(fundamental_score),
+            'news_score': float(news_score),
+            'ai_score': float(ai_score),
+            'filters_detail': str(filters_detail),
+            'ai_reasoning': str(ai_reasoning),
+            'hit_time': '',
+            'hit_price': 0
+        }
+        ref.push(data)
         return True
     except Exception as e:
         print(f"Error add_signal: {e}")
         return False
 
-
-def _row_to_dict(row):
-    if not row:
-        return None
-    keys = [
-        'id', 'timestamp', 'ticker', 'asset_name', 'direction',
-        'entry_price', 'current_price', 'tp1', 'tp2', 'tp3', 'sl',
-        'strength', 'status', 'progress', 'pnl_pct', 'timeframe',
-        'technical_score', 'fundamental_score', 'news_score',
-        'ai_score', 'filters_detail', 'ai_reasoning',
-        'hit_time', 'hit_price'
-    ]
-    float_keys = {
-        'entry_price', 'current_price', 'tp1', 'tp2', 'tp3', 'sl',
-        'strength', 'progress', 'pnl_pct', 'technical_score',
-        'fundamental_score', 'news_score', 'ai_score', 'hit_price'
-    }
-    d = {}
-    for i, k in enumerate(keys):
-        if i < len(row):
-            val = row[i]
-            if k in float_keys:
-                try:
-                    d[k] = float(val) if val is not None else 0.0
-                except (TypeError, ValueError):
-                    d[k] = 0.0
-            else:
-                d[k] = val if val is not None else ''
-        else:
-            d[k] = 0.0 if k in float_keys else ''
-    return d
-
-
 def get_active_signals():
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute(
-            "SELECT id, timestamp, ticker, asset_name, direction, "
-            "entry_price, current_price, tp1, tp2, tp3, sl, "
-            "strength, status, progress, pnl_pct, timeframe, "
-            "technical_score, fundamental_score, news_score, "
-            "ai_score, filters_detail, ai_reasoning, "
-            "hit_time, hit_price "
-            "FROM signals_tracking WHERE status='active' "
-            "ORDER BY strength DESC"
-        )
-        rows = c.fetchall()
-        conn.close()
-        return [_row_to_dict(r) for r in rows if r]
+        ref = _ref('signals_tracking')
+        snapshot = ref.order_by_child('status').equal_to('active').get()
+        if not snapshot: return []
+        
+        rows = []
+        for key, val in snapshot.items():
+            # هام جداً: نحفظ مفتاح Firebase في الحقل id لكي يستطيع app.py تحديثه لاحقاً
+            val['id'] = key
+            rows.append(val)
+        
+        # ترتيب حسب القوة تنازلياً
+        return sorted(rows, key=lambda x: x.get('strength', 0), reverse=True)
     except Exception as e:
         print(f"Error get_active_signals: {e}")
         return []
 
-
 def get_closed_signals():
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute(
-            "SELECT id, timestamp, ticker, asset_name, direction, "
-            "entry_price, current_price, tp1, tp2, tp3, sl, "
-            "strength, status, progress, pnl_pct, timeframe, "
-            "technical_score, fundamental_score, news_score, "
-            "ai_score, filters_detail, ai_reasoning, "
-            "hit_time, hit_price "
-            "FROM signals_tracking WHERE status!='active' "
-            "ORDER BY timestamp DESC LIMIT 50"
-        )
-        rows = c.fetchall()
-        conn.close()
-        return [_row_to_dict(r) for r in rows if r]
+        ref = _ref('signals_tracking')
+        # نجلب آخر 100 عنصر ونقوم بتصفية المنتهية (غير النشطة)
+        snapshot = ref.order_by_key().limit_to_last(100).get()
+        if not snapshot: return []
+        
+        rows = []
+        for key, val in snapshot.items():
+            if val.get('status') != 'active':
+                val['id'] = key
+                rows.append(val)
+        
+        return sorted(rows, key=lambda x: x.get('timestamp', ''), reverse=True)
     except Exception as e:
         print(f"Error get_closed_signals: {e}")
         return []
 
-
 def update_signal_status(signal_id, current_price, status, progress, pnl,
                          hit_time='', hit_price=0):
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('''
-            UPDATE signals_tracking
-            SET current_price=?, status=?, progress=?, pnl_pct=?,
-                hit_time=?, hit_price=?
-            WHERE id=?
-        ''', (float(current_price), str(status), float(progress),
-              float(pnl), str(hit_time), float(hit_price), int(signal_id)))
-        conn.commit()
-        conn.close()
+        # التحديث باستخدام المفتاح المباشر
+        ref = _ref(f'signals_tracking/{signal_id}')
+        
+        updates = {
+            'current_price': float(current_price),
+            'status': str(status),
+            'progress': float(progress),
+            'pnl_pct': float(pnl),
+            'hit_time': str(hit_time),
+            'hit_price': float(hit_price)
+        }
+        ref.update(updates)
     except Exception as e:
         print(f"Error update_signal: {e}")
 
+def delete_all_active():
+    try:
+        ref = _ref('signals_tracking')
+        snapshot = ref.order_by_child('status').equal_to('active').get()
+        if snapshot:
+            for key in snapshot:
+                # حذف كل عقدة على حدة
+                _ref(f'signals_tracking/{key}').delete()
+    except Exception as e:
+        print(f"Error delete_all_active: {e}")
 
+# ============================================================
+# 3. حالة المسح (Scan Status)
+# ============================================================
 def set_scan_status(is_running, progress=0, total=0, scanned=0,
                     found=0, current=''):
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("DELETE FROM scan_status")
+        ref = _ref('scan_status')
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         end = '' if is_running else now
-        c.execute('''
-            INSERT INTO scan_status (
-                id, is_running, progress, total_assets, scanned_assets,
-                found_signals, current_asset, start_time, end_time
-            ) VALUES (1,?,?,?,?,?,?,?,?)
-        ''', (
-            1 if is_running else 0, float(progress), int(total),
-            int(scanned), int(found), str(current), now, end
-        ))
-        conn.commit()
-        conn.close()
+        
+        data = {
+            'is_running': bool(is_running),
+            'progress': float(progress),
+            'total_assets': int(total),
+            'scanned_assets': int(scanned),
+            'found_signals': int(found),
+            'current_asset': str(current),
+            'start_time': now,
+            'end_time': end
+        }
+        # نستخدم set لاستبدال الحالة القديمة بالكامل
+        ref.set(data)
     except Exception as e:
         print(f"Error set_scan_status: {e}")
 
-
 def get_scan_status():
     try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT * FROM scan_status WHERE id=1")
-        row = c.fetchone()
-        conn.close()
-        if row:
-            return {
-                'is_running': bool(row[1]),
-                'progress': float(row[2]) if row[2] else 0,
-                'total_assets': int(row[3]) if row[3] else 0,
-                'scanned_assets': int(row[4]) if row[4] else 0,
-                'found_signals': int(row[5]) if row[5] else 0,
-                'current_asset': row[6] if row[6] else '',
-                'start_time': row[7] if row[7] else '',
-                'end_time': row[8] if row[8] else '',
-            }
-        return None
+        ref = _ref('scan_status')
+        return ref.get()
     except Exception:
         return None
-
-
-def delete_all_active():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("DELETE FROM signals_tracking WHERE status='active'")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Error delete_all_active: {e}")
