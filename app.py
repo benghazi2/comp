@@ -1,3 +1,5 @@
+--- START OF FILE app.py ---
+
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
@@ -24,77 +26,46 @@ st.set_page_config(page_title="ProTrade Elite 5.0", layout="wide",
 # ============================================================
 # 🔥 الحل النهائي: القفز للنافذة الأم (Parent Window Injection)
 # ============================================================
-# هذا الكود يستخدم الجافاسكريبت للوصول إلى "نافذة المتصفح الرئيسية"
-# وحقن كود الإخفاء فيها مباشرة، وليس داخل التطبيق فقط.
-# ============================================================
 HACK_CODE = """
 <script>
-    // محاولة الوصول إلى النافذة الأم (Parent Window)
     try {
         var parentDoc = window.parent.document;
-        
-        // إنشاء عنصر تنسيق (Style) جديد
         var style = parentDoc.createElement('style');
         style.innerHTML = `
-            /* إخفاء الهيدر بالكامل */
             header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
-            
-            /* إخفاء زر النشر والتحكم (الزر الأحمر/الأبيض) */
             .stAppDeployButton { display: none !important; }
             [data-testid="manage-app-button"] { display: none !important; }
-            
-            /* إخفاء الشريط الملون العلوي */
             [data-testid="stDecoration"] { display: none !important; }
-            
-            /* إخفاء أيقونة الحالة (Running Man) */
             [data-testid="stStatusWidget"] { display: none !important; }
-            
-            /* إخفاء الفوتر */
             footer { display: none !important; }
-            
-            /* رفع المحتوى للأعلى ليملأ مكان الهيدر المختفي */
             .main .block-container { padding-top: 1rem !important; }
         `;
-        
-        // زرع التنسيق في رأس الصفحة الأم
         parentDoc.head.appendChild(style);
-        
     } catch (e) {
         console.log("Failed to inject CSS into parent window: " + e);
     }
 </script>
 """
-# تنفيذ الكود المخفي
 components.html(HACK_CODE, height=0, width=0)
-
 
 # ============================================================
 # CSS داخلي (خط دفاع ثاني)
 # ============================================================
 st.markdown("""
 <style>
-    /* إجبار الخلفية البيضاء */
     [data-testid="stAppViewContainer"], .stApp {
         background-color: #ffffff !important;
         color: #000000 !important;
     }
-    
-    /* إخفاء العناصر الداخلية */
     header {visibility: hidden !important;}
     footer {visibility: hidden !important;}
     #MainMenu {visibility: hidden !important;}
-    
-    /* تنسيق النصوص */
     .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6, span, li {
         color: #262730 !important;
     }
-    
-    /* استثناءات البطاقات لتبقى جميلة */
     .rec-card, .rec-card * { color: white !important; }
     .scan-banner, .scan-banner * { color: inherit !important; }
     .main-signal, .main-signal * { color: white !important; }
-    
-    /* إخفاء القائمة الجانبية */
     [data-testid="stSidebar"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -105,7 +76,7 @@ except Exception as e:
     st.error(f"خطأ في قاعدة البيانات: {e}")
 
 # ============================================================
-# CSS التنسيقات الجمالية (البطاقات والأزرار)
+# CSS التنسيقات الجمالية
 # ============================================================
 st.markdown("""
 <style>
@@ -1033,10 +1004,11 @@ if missing:
     st.error(f"⚠️ db.py ناقص: {', '.join(missing)}")
     st.stop()
 
-# شريط حالة المسح
+# شريط حالة المسح مع التحديث التلقائي
 scan_st = db.get_scan_status()
 if scan_st:
     if scan_st['is_running']:
+        # عرض الحالة
         st.markdown(f"""
         <div class="scan-banner">
             <span>🔄 جاري المسح: {scan_st['current_asset']}
@@ -1044,6 +1016,11 @@ if scan_st:
             <span>وجد: {scan_st['found_signals']} إشارة</span>
         </div>""", unsafe_allow_html=True)
         st.progress(scan_st['progress'] / 100)
+        
+        # 🔥🔥 التحديث التلقائي هنا: انتظر قليلاً ثم أعد تحميل الصفحة
+        time.sleep(3) 
+        st.rerun()
+        
     elif scan_st['found_signals'] > 0 and st.session_state.get('scan_running'):
         st.session_state.scan_running = False
         st.session_state.scan_complete = True
@@ -1138,13 +1115,16 @@ if st.session_state.current_view == "signals":
             else:
                 st.session_state.scan_running = True
                 ai_token = st.secrets.get("HF_TOKEN", "")
+                
+                # 🔥🔥🔥 التعديل هنا: daemon=False للاستمرار في الخلفية 🔥🔥🔥
                 scan_thread = threading.Thread(
                     target=background_scan,
                     args=(assets, scan_tf, ai_token),
-                    daemon=True
+                    daemon=False 
                 )
                 scan_thread.start()
-                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل في الخلفية. تنقل بحرية!")
+                
+                st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل في الخلفية. يمكنك التنقل بحرية وسيستمر المسح.")
                 time.sleep(2)
                 st.rerun()
 
