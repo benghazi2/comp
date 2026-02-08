@@ -5,3 +5,4 @@ pandas
 ta
 numpy
 huggingface_hub
+duckduckgo-search
