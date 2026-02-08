@@ -10,13 +10,17 @@ import time
 from datetime import datetime, timedelta
 import importlib
 import threading
+import requests
+import re
+from urllib.parse import quote_plus
 import db
 
+# محاولة استيراد مكتبات البحث
 try:
     from duckduckgo_search import DDGS
-    HAS_SEARCH = True
+    HAS_DDG = True
 except ImportError:
-    HAS_SEARCH = False
+    HAS_DDG = False
 
 importlib.reload(db)
 
@@ -56,7 +60,7 @@ footer{display:none!important}
 try:
     db_ok = db.init_db()
     if not db_ok:
-        st.error("⚠️ فشل الاتصال بقاعدة البيانات - تحقق من إعدادات Firebase في secrets")
+        st.error("⚠️ فشل الاتصال بقاعدة البيانات")
 except Exception as e:
     st.error(f"خطأ قاعدة البيانات: {e}")
     db_ok = False
@@ -79,64 +83,372 @@ html,body,[class*="css"]{font-family:'Cairo',sans-serif}
 .scan-done-zero{background:linear-gradient(90deg,#fef3c7,#fde68a);border:1px solid #fbbf24;border-radius:10px;padding:12px 20px;margin:10px 0;color:#92400e!important;font-weight:bold;text-align:center}
 .web-source{background:#0f172a;border:1px solid #1e3a5f;border-radius:8px;padding:8px 12px;margin:4px 0;font-size:12px}
 .web-source a{color:#60a5fa;text-decoration:none}
-.web-source a:hover{text-decoration:underline}
+.live-price-card{background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid #0f3460;border-radius:12px;padding:15px;margin:8px 0;color:white}
+.search-status{background:#1e293b;border-radius:8px;padding:8px 12px;margin:5px 0;font-size:12px;color:#94a3b8}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
-# بحث الويب
+# نظام البحث المتقدم - 4 مصادر
 # ============================================================
-def web_search(query, max_results=8):
-    if not HAS_SEARCH:
+
+# --- المصدر 1: أسعار مباشرة من Yahoo Finance ---
+def get_live_price(symbol_query):
+    """جلب السعر الحالي مباشرة من Yahoo Finance"""
+    price_map = {
+        'ذهب': 'GC=F', 'gold': 'GC=F', 'الذهب': 'GC=F', 'xauusd': 'GC=F', 'xau': 'GC=F',
+        'فضة': 'SI=F', 'silver': 'SI=F', 'الفضة': 'SI=F', 'xagusd': 'SI=F',
+        'نفط': 'CL=F', 'oil': 'CL=F', 'النفط': 'CL=F', 'crude': 'CL=F',
+        'بيتكوين': 'BTC-USD', 'bitcoin': 'BTC-USD', 'btc': 'BTC-USD',
+        'ايثريوم': 'ETH-USD', 'ethereum': 'ETH-USD', 'eth': 'ETH-USD',
+        'سولانا': 'SOL-USD', 'solana': 'SOL-USD', 'sol': 'SOL-USD',
+        'ريبل': 'XRP-USD', 'xrp': 'XRP-USD',
+        'دوج': 'DOGE-USD', 'doge': 'DOGE-USD', 'dogecoin': 'DOGE-USD',
+        'بنب': 'BNB-USD', 'bnb': 'BNB-USD',
+        'كاردانو': 'ADA-USD', 'ada': 'ADA-USD', 'cardano': 'ADA-USD',
+        'يورو': 'EURUSD=X', 'eurusd': 'EURUSD=X', 'eur/usd': 'EURUSD=X', 'اليورو': 'EURUSD=X',
+        'باوند': 'GBPUSD=X', 'gbpusd': 'GBPUSD=X', 'gbp/usd': 'GBPUSD=X', 'الباوند': 'GBPUSD=X', 'استرليني': 'GBPUSD=X',
+        'ين': 'USDJPY=X', 'usdjpy': 'USDJPY=X', 'usd/jpy': 'USDJPY=X', 'الين': 'USDJPY=X',
+        'فرنك': 'USDCHF=X', 'usdchf': 'USDCHF=X', 'الفرنك': 'USDCHF=X',
+        'دولار كندي': 'USDCAD=X', 'usdcad': 'USDCAD=X',
+        'دولار استرالي': 'AUDUSD=X', 'audusd': 'AUDUSD=X',
+        'نيوزلندي': 'NZDUSD=X', 'nzdusd': 'NZDUSD=X',
+        'ابل': 'AAPL', 'apple': 'AAPL', 'aapl': 'AAPL',
+        'تسلا': 'TSLA', 'tesla': 'TSLA', 'tsla': 'TSLA',
+        'نفيديا': 'NVDA', 'nvidia': 'NVDA', 'nvda': 'NVDA', 'انفيديا': 'NVDA',
+        'جوجل': 'GOOGL', 'google': 'GOOGL', 'googl': 'GOOGL',
+        'امازون': 'AMZN', 'amazon': 'AMZN', 'amzn': 'AMZN',
+        'مايكروسوفت': 'MSFT', 'microsoft': 'MSFT', 'msft': 'MSFT',
+        'ميتا': 'META', 'meta': 'META', 'فيسبوك': 'META',
+        'نتفلكس': 'NFLX', 'netflix': 'NFLX',
+        'amd': 'AMD', 'انتل': 'INTC', 'intel': 'INTC',
+        'sp500': '^GSPC', 'اس اند بي': '^GSPC', 's&p': '^GSPC', 's&p500': '^GSPC',
+        'ناسداك': '^IXIC', 'nasdaq': '^IXIC',
+        'داو جونز': '^DJI', 'dow': '^DJI', 'dow jones': '^DJI',
+        'avax': 'AVAX-USD', 'dot': 'DOT-USD', 'بولكادوت': 'DOT-USD',
+        'غاز': 'NG=F', 'gas': 'NG=F', 'الغاز': 'NG=F', 'نحاس': 'HG=F', 'copper': 'HG=F',
+    }
+
+    query_lower = symbol_query.lower().strip()
+    results = []
+
+    # البحث عن كل الأصول المطابقة
+    matched_tickers = set()
+    for keyword, tick in price_map.items():
+        if keyword in query_lower:
+            matched_tickers.add(tick)
+
+    if not matched_tickers:
+        return []
+
+    for tick in matched_tickers:
+        try:
+            stock = yf.Ticker(tick)
+            hist = stock.history(period="5d", interval="1d")
+            if hist.empty:
+                continue
+
+            current = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current
+            change = current - prev
+            change_pct = (change / prev * 100) if prev != 0 else 0
+            high_today = float(hist['High'].iloc[-1])
+            low_today = float(hist['Low'].iloc[-1])
+            open_today = float(hist['Open'].iloc[-1])
+
+            # بيانات إضافية
+            high_52w = float(hist['High'].max()) if len(hist) > 1 else high_today
+            low_52w = float(hist['Low'].min()) if len(hist) > 1 else low_today
+
+            # اسم الأصل
+            name_map = {
+                'GC=F': 'الذهب (XAU/USD)', 'SI=F': 'الفضة (XAG/USD)',
+                'CL=F': 'النفط الخام (WTI)', 'NG=F': 'الغاز الطبيعي', 'HG=F': 'النحاس',
+                'BTC-USD': 'بيتكوين (BTC)', 'ETH-USD': 'إيثريوم (ETH)',
+                'SOL-USD': 'سولانا (SOL)', 'XRP-USD': 'ريبل (XRP)',
+                'BNB-USD': 'بينانس (BNB)', 'ADA-USD': 'كاردانو (ADA)',
+                'DOGE-USD': 'دوجكوين (DOGE)', 'AVAX-USD': 'أفالانش (AVAX)',
+                'DOT-USD': 'بولكادوت (DOT)',
+                'EURUSD=X': 'يورو/دولار', 'GBPUSD=X': 'باوند/دولار',
+                'USDJPY=X': 'دولار/ين', 'USDCHF=X': 'دولار/فرنك',
+                'USDCAD=X': 'دولار/كندي', 'AUDUSD=X': 'استرالي/دولار',
+                'NZDUSD=X': 'نيوزلندي/دولار',
+                'AAPL': 'آبل (AAPL)', 'TSLA': 'تسلا (TSLA)',
+                'NVDA': 'إنفيديا (NVDA)', 'GOOGL': 'جوجل (GOOGL)',
+                'AMZN': 'أمازون (AMZN)', 'MSFT': 'مايكروسوفت (MSFT)',
+                'META': 'ميتا (META)', 'NFLX': 'نتفلكس (NFLX)',
+                'AMD': 'AMD', 'INTC': 'إنتل (INTC)',
+                '^GSPC': 'S&P 500', '^IXIC': 'ناسداك', '^DJI': 'داو جونز',
+            }
+
+            asset_name = name_map.get(tick, tick)
+
+            results.append({
+                'ticker': tick,
+                'name': asset_name,
+                'price': current,
+                'change': change,
+                'change_pct': change_pct,
+                'high': high_today,
+                'low': low_today,
+                'open': open_today,
+                'prev_close': prev,
+                'direction': '📈' if change >= 0 else '📉',
+                'color': '#00ff88' if change >= 0 else '#ff4444',
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M UTC')
+            })
+        except Exception as e:
+            print(f"Price fetch error for {tick}: {e}")
+            continue
+
+    return results
+
+
+# --- المصدر 2: بحث Google عبر Scraping ---
+def search_google(query, max_results=6):
+    """بحث Google مباشر"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+        }
+        url = f"https://www.google.com/search?q={quote_plus(query)}&num={max_results}&hl=ar"
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        if resp.status_code != 200:
+            return []
+
+        results = []
+        text = resp.text
+
+        # استخراج النتائج
+        # البحث عن العناوين والوصف
+        title_pattern = r'<h3[^>]*>(.*?)</h3>'
+        titles = re.findall(title_pattern, text)
+
+        snippet_pattern = r'<span[^>]*class="[^"]*"[^>]*>((?:(?!</span>).)*(?:price|سعر|USD|\$|gold|ذهب|bitcoin|بيتكوين|ارتفع|انخفض|تداول|market|سوق)(?:(?!</span>).)*)</span>'
+        snippets = re.findall(snippet_pattern, text, re.IGNORECASE | re.DOTALL)
+
+        # تنظيف HTML
+        def clean_html(text):
+            clean = re.sub(r'<[^>]+>', '', text)
+            clean = clean.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
+            return clean.strip()
+
+        for i, title in enumerate(titles[:max_results]):
+            clean_title = clean_html(title)
+            if clean_title and len(clean_title) > 5:
+                snippet = clean_html(snippets[i]) if i < len(snippets) else ""
+                results.append({
+                    'title': clean_title,
+                    'body': snippet[:300],
+                    'href': '',
+                    'source': 'Google'
+                })
+
+        return results
+    except Exception as e:
+        print(f"Google search error: {e}")
+        return []
+
+
+# --- المصدر 3: DuckDuckGo ---
+def search_ddg(query, max_results=6):
+    if not HAS_DDG:
         return []
     try:
         with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=max_results, region='wt-wt'))
-    except:
+            results = list(ddgs.text(query, max_results=max_results, region='wt-wt'))
+        return results
+    except Exception as e:
+        print(f"DDG error: {e}")
         return []
 
-def web_search_news(query, max_results=8):
-    if not HAS_SEARCH:
+
+def search_ddg_news(query, max_results=5):
+    if not HAS_DDG:
         return []
     try:
         with DDGS() as ddgs:
             return list(ddgs.news(query, max_results=max_results, region='wt-wt'))
-    except:
+    except Exception as e:
+        print(f"DDG news error: {e}")
         return []
 
+
+# --- المصدر 4: Brave Search API (مجاني) ---
+def search_brave(query, max_results=6):
+    """بحث Brave - لا يحتاج API key للنتائج الأساسية"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+        }
+        url = f"https://search.brave.com/search?q={quote_plus(query)}&source=web"
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return []
+
+        results = []
+        # استخراج snippet results
+        snippets = re.findall(r'<p class="snippet-description"[^>]*>(.*?)</p>', resp.text, re.DOTALL)
+        titles = re.findall(r'<span class="snippet-title"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
+
+        clean = lambda t: re.sub(r'<[^>]+>', '', t).strip()
+
+        for i in range(min(len(titles), max_results)):
+            t = clean(titles[i])
+            b = clean(snippets[i]) if i < len(snippets) else ""
+            if t and len(t) > 3:
+                results.append({'title': t, 'body': b[:300], 'href': '', 'source': 'Brave'})
+
+        return results
+    except Exception as e:
+        print(f"Brave search error: {e}")
+        return []
+
+
+# --- محرك البحث الموحد ---
+def multi_search(query, max_results=8):
+    """بحث موحد من عدة مصادر"""
+    all_results = []
+    sources_used = []
+
+    # المحاولة 1: DuckDuckGo
+    ddg_results = search_ddg(query, max_results)
+    if ddg_results:
+        all_results.extend(ddg_results)
+        sources_used.append("DuckDuckGo")
+
+    # المحاولة 2: إذا لم نحصل على نتائج كافية، جرب Google
+    if len(all_results) < 3:
+        google_results = search_google(query, max_results)
+        if google_results:
+            all_results.extend(google_results)
+            sources_used.append("Google")
+
+    # المحاولة 3: إذا لا زلنا بحاجة لمزيد، جرب Brave
+    if len(all_results) < 3:
+        brave_results = search_brave(query, max_results)
+        if brave_results:
+            all_results.extend(brave_results)
+            sources_used.append("Brave")
+
+    # إزالة التكرار
+    seen = set()
+    unique = []
+    for r in all_results:
+        title = r.get('title', '')[:50]
+        if title not in seen:
+            seen.add(title)
+            unique.append(r)
+
+    return unique[:max_results], sources_used
+
+
+def multi_search_news(query, max_results=5):
+    """بحث أخبار من عدة مصادر"""
+    news = search_ddg_news(query, max_results)
+    if news:
+        return news
+
+    # fallback: بحث عام مع كلمة أخبار
+    results, _ = multi_search(f"{query} أخبار اليوم news today", max_results)
+    return [{'title': r.get('title', ''), 'body': r.get('body', ''), 'date': 'اليوم', 'source': r.get('source', 'Web'), 'url': r.get('href', '')} for r in results]
+
+
 def build_search_context(query):
+    """بناء سياق شامل للـ AI"""
     financial_words = ['سعر','price','btc','eth','gold','ذهب','دولار','يورو',
         'سهم','stock','crypto','بيتكوين','نفط','oil','تداول','trading','forex',
         'فوركس','market','سوق','اقتصاد','economy','fed','فائدة','interest',
         'inflation','تضخم','nasdaq','bitcoin','ethereum','solana','usd','eur',
         'gbp','jpy','توقع','forecast','تحليل','analysis','أخبار','news',
         'xrp','bnb','ada','doge','apple','tesla','nvidia','google','amazon',
-        'microsoft','meta','netflix','amd','intel']
+        'microsoft','meta','netflix','amd','intel','كم','how much','what is',
+        'فضة','silver','نحاس','copper','غاز','gas','باوند','ين','فرنك',
+        'ريبل','كاردانو','سولانا','ايثريوم','افالانش','بولكادوت','دوج',
+        'ابل','تسلا','نفيديا','جوجل','امازون','مايكروسوفت','ميتا','نتفلكس',
+        'sp500','داو','ناسداك','مؤشر']
 
     is_financial = any(w in query.lower() for w in financial_words)
-    search_results = web_search(query, max_results=6)
-    news_results = web_search_news(query, max_results=5) if is_financial else []
 
-    if not search_results and not news_results:
-        return "", [], []
+    # 1. أسعار مباشرة
+    live_prices = get_live_price(query) if is_financial else []
 
-    parts = [f"[تاريخ اليوم: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC]"]
+    # 2. بحث عام
+    search_results, search_sources = multi_search(query, max_results=6)
+
+    # 3. أخبار
+    news_results = multi_search_news(query, max_results=5) if is_financial else []
+
+    # بناء السياق
+    parts = [f"[تاريخ ووقت الآن: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC]"]
+
+    if live_prices:
+        parts.append("\n=== أسعار مباشرة (Yahoo Finance - لحظية) ===")
+        for p in live_prices:
+            parts.append(
+                f"• {p['name']}: {p['price']:.2f} USD "
+                f"| التغير: {p['change']:+.2f} ({p['change_pct']:+.2f}%) "
+                f"| أعلى: {p['high']:.2f} | أدنى: {p['low']:.2f} "
+                f"| الافتتاح: {p['open']:.2f} | الإغلاق السابق: {p['prev_close']:.2f}"
+            )
 
     if news_results:
         parts.append("\n=== آخر الأخبار ===")
         for i, r in enumerate(news_results[:5], 1):
-            parts.append(f"{i}. [{r.get('date','')}] {r.get('title','')}: {r.get('body','')[:200]}")
+            date = r.get('date', '')
+            title = r.get('title', '')
+            body = r.get('body', '')[:200]
+            source = r.get('source', '')
+            parts.append(f"{i}. [{date}] {title} ({source}): {body}")
 
     if search_results:
         parts.append("\n=== نتائج البحث ===")
         for i, r in enumerate(search_results[:6], 1):
             parts.append(f"{i}. {r.get('title','')}: {r.get('body','')[:250]}")
 
-    return "\n".join(parts), search_results, news_results
+    context = "\n".join(parts) if len(parts) > 1 else ""
+    return context, search_results, news_results, live_prices, search_sources
 
-def format_sources_html(search_results, news_results):
+
+def format_live_prices_html(prices):
+    """تنسيق الأسعار المباشرة"""
+    if not prices:
+        return ""
+    html = ""
+    for p in prices:
+        arrow = "▲" if p['change'] >= 0 else "▼"
+        html += f"""
+        <div class="live-price-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                    <span style="font-size:18px;font-weight:bold;">{p['name']}</span>
+                    <span style="font-size:12px;color:#888;margin-right:8px;">{p['ticker']}</span>
+                </div>
+                <div style="text-align:left;">
+                    <div style="font-size:22px;font-weight:bold;color:{p['color']};">{p['price']:,.2f} $</div>
+                    <div style="font-size:14px;color:{p['color']};">{arrow} {p['change']:+,.2f} ({p['change_pct']:+.2f}%)</div>
+                </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#9ca3af;">
+                <span>الافتتاح: {p['open']:,.2f}</span>
+                <span>أعلى: {p['high']:,.2f}</span>
+                <span>أدنى: {p['low']:,.2f}</span>
+                <span>إغلاق سابق: {p['prev_close']:,.2f}</span>
+            </div>
+            <div style="font-size:10px;color:#6b7280;margin-top:5px;">📊 Yahoo Finance | {p['timestamp']}</div>
+        </div>"""
+    return html
+
+
+def format_sources_html(search_results, news_results, sources_used=None):
     if not search_results and not news_results:
         return ""
     html = '<div style="margin-top:15px;padding-top:10px;border-top:1px solid #333;">'
+    if sources_used:
+        html += f'<p style="color:#64748b;font-size:11px;margin-bottom:5px;">🔍 محركات البحث: {" + ".join(sources_used)}</p>'
     html += '<p style="color:#94a3b8;font-size:13px;margin-bottom:8px;">📎 المصادر:</p>'
     sources = []
     for r in (news_results or [])[:3]:
@@ -144,13 +456,14 @@ def format_sources_html(search_results, news_results):
     for r in (search_results or [])[:3]:
         sources.append({'title':r.get('title',''),'url':r.get('href',''),'type':'web'})
     for s in sources[:5]:
-        icon = "📰" if s['type']=='news' else "🔗"
+        icon = "📰" if s.get('type')=='news' else "🔗"
         title = s['title'][:60]+"..." if len(s.get('title',''))>60 else s.get('title','')
         url = s.get('url','#')
         extra = f" - {s.get('source','')}" if s.get('source') else ""
         html += f'<div class="web-source">{icon} <a href="{url}" target="_blank">{title}</a>{extra}</div>'
     html += '</div>'
     return html
+
 
 # ============================================================
 # Session State
@@ -208,9 +521,6 @@ def to_tv_symbol(ticker):
     if ticker == "CL=F": return "NYMEX:CL1!"
     return f"NASDAQ:{ticker}"
 
-# ============================================================
-# AI Client
-# ============================================================
 client = None
 try:
     token = st.secrets.get("HF_TOKEN","")
@@ -220,14 +530,13 @@ except:
     client = None
 
 # ============================================================
-# دوال التحليل
+# دوال التحليل (نفس الكود السابق بالضبط)
 # ============================================================
 def safe_val(value, default=0.0):
     try:
         v = float(value)
         return default if (np.isnan(v) or np.isinf(v)) else v
-    except:
-        return default
+    except: return default
 
 def fetch_data(ticker, tf_key):
     ticker = ticker.strip().upper()
@@ -296,7 +605,6 @@ def calculate_indicators(df):
 def apply_all_filters(df, info):
     curr = df.iloc[-1]; prev = df.iloc[-2] if len(df)>1 else curr
     price = safe_val(curr['Close']); filters = []; total = 0
-
     e50=safe_val(curr.get('EMA_50')); e200=safe_val(curr.get('EMA_200'))
     if e50>0 and e200>0:
         if e50>e200: filters.append(("تقاطع ذهبي",10,"pass","صاعد")); total+=10
@@ -304,13 +612,11 @@ def apply_all_filters(df, info):
     if e200>0:
         if price>e200: filters.append(("فوق EMA200",8,"pass",f"{price:.4f}>{e200:.4f}")); total+=8
         else: filters.append(("تحت EMA200",-8,"fail",f"{price:.4f}<{e200:.4f}")); total-=8
-
     e5=safe_val(curr.get('EMA_5')); e10=safe_val(curr.get('EMA_10')); e20=safe_val(curr.get('EMA_20'))
     if all(v>0 for v in [e5,e10,e20,e50]):
         if e5>e10>e20>e50: filters.append(("EMAs صعودي",7,"pass","")); total+=7
         elif e5<e10<e20<e50: filters.append(("EMAs هبوطي",-7,"fail","")); total-=7
         else: filters.append(("EMAs مختلط",0,"warn",""))
-
     adx=safe_val(curr.get('ADX')); dip=safe_val(curr.get('DI_plus')); dim=safe_val(curr.get('DI_minus'))
     if adx>30:
         if dip>dim: filters.append(("ADX صاعد قوي",8,"pass",f"{adx:.0f}")); total+=8
@@ -318,18 +624,15 @@ def apply_all_filters(df, info):
     elif adx>20:
         if dip>dim: filters.append(("ADX صاعد",4,"pass",f"{adx:.0f}")); total+=4
         else: filters.append(("ADX هابط",-4,"fail",f"{adx:.0f}")); total-=4
-
     psar=safe_val(curr.get('PSAR'))
     if psar>0:
         if price>psar: filters.append(("PSAR صعودي",5,"pass","")); total+=5
         else: filters.append(("PSAR هبوطي",-5,"fail","")); total-=5
-
     ia=safe_val(curr.get('Ich_A')); ib=safe_val(curr.get('Ich_B'))
     if ia>0 and ib>0:
         if price>max(ia,ib): filters.append(("فوق إيشيموكو",6,"pass","")); total+=6
         elif price<min(ia,ib): filters.append(("تحت إيشيموكو",-6,"fail","")); total-=6
         else: filters.append(("داخل السحابة",0,"warn",""))
-
     rsi=safe_val(curr.get('RSI'))
     if rsi>0:
         if rsi<25: filters.append(("RSI بيعي شديد",10,"pass",f"{rsi:.0f}")); total+=10
@@ -337,52 +640,43 @@ def apply_all_filters(df, info):
         elif rsi>75: filters.append(("RSI شرائي شديد",-10,"fail",f"{rsi:.0f}")); total-=10
         elif rsi>65: filters.append(("RSI قريب شرائي",-5,"fail",f"{rsi:.0f}")); total-=5
         else: filters.append(("RSI وسط",0,"warn",f"{rsi:.0f}"))
-
     mh=safe_val(curr.get('MACD_Hist')); mhp=safe_val(prev.get('MACD_Hist')) if hasattr(prev,'get') else 0
     if mh>0 and mhp<=0: filters.append(("MACD تقاطع صعودي",8,"pass","")); total+=8
     elif mh<0 and mhp>=0: filters.append(("MACD تقاطع هبوطي",-8,"fail","")); total-=8
     elif mh>0: filters.append(("MACD إيجابي",4,"pass","")); total+=4
     elif mh<0: filters.append(("MACD سلبي",-4,"fail","")); total-=4
-
     sk=safe_val(curr.get('Stoch_K')); sd=safe_val(curr.get('Stoch_D'))
     if sk>0:
         if sk<20 and sk>sd: filters.append(("Stoch بيعي+تقاطع",7,"pass",f"K={sk:.0f}")); total+=7
         elif sk>80 and sk<sd: filters.append(("Stoch شرائي+تقاطع",-7,"fail",f"K={sk:.0f}")); total-=7
         elif sk<20: filters.append(("Stoch بيعي",4,"pass",f"K={sk:.0f}")); total+=4
         elif sk>80: filters.append(("Stoch شرائي",-4,"fail",f"K={sk:.0f}")); total-=4
-
     cci=safe_val(curr.get('CCI'))
     if cci!=0:
         if cci<-200: filters.append(("CCI بيعي حاد",6,"pass",f"{cci:.0f}")); total+=6
         elif cci>200: filters.append(("CCI شرائي حاد",-6,"fail",f"{cci:.0f}")); total-=6
-
     wr=safe_val(curr.get('Williams_R'))
     if wr!=0:
         if wr<-80: filters.append(("Williams بيعي",4,"pass",f"{wr:.0f}")); total+=4
         elif wr>-20: filters.append(("Williams شرائي",-4,"fail",f"{wr:.0f}")); total-=4
-
     roc=safe_val(curr.get('ROC'))
     if roc!=0:
         if roc>5: filters.append(("زخم صعودي",5,"pass",f"{roc:.1f}%")); total+=5
         elif roc<-5: filters.append(("زخم هبوطي",-5,"fail",f"{roc:.1f}%")); total-=5
-
     bbu=safe_val(curr.get('BB_Upper')); bbl=safe_val(curr.get('BB_Lower'))
     if bbu>0 and bbl>0:
         if price<=bbl: filters.append(("Bollinger سفلي",6,"pass","ارتداد")); total+=6
         elif price>=bbu: filters.append(("Bollinger علوي",-6,"fail","هبوط")); total-=6
-
     atr=safe_val(curr.get('ATR'))
     if atr>0 and price>0:
         ap=(atr/price)*100
         if ap>3: filters.append(("تذبذب عالي",-3,"warn",f"{ap:.1f}%")); total-=3
         elif ap<0.5: filters.append(("تذبذب منخفض",-2,"warn",f"{ap:.1f}%")); total-=2
         else: filters.append(("تذبذب مناسب",3,"pass",f"{ap:.1f}%")); total+=3
-
     mfi=safe_val(curr.get('MFI'))
     if mfi>0:
         if mfi<20: filters.append(("MFI بيعي",5,"pass",f"{mfi:.0f}")); total+=5
         elif mfi>80: filters.append(("MFI شرائي",-5,"fail",f"{mfi:.0f}")); total-=5
-
     if 'OBV' in df.columns and len(df)>5:
         try:
             on=safe_val(curr.get('OBV')); o5=safe_val(df.iloc[-5].get('OBV')); p5=safe_val(df.iloc[-5]['Close'])
@@ -390,7 +684,6 @@ def apply_all_filters(df, info):
             elif on<o5 and price<p5: filters.append(("OBV هبوط",-4,"fail","")); total-=4
             elif on<o5 and price>p5: filters.append(("تباعد OBV",-3,"warn","")); total-=3
         except: pass
-
     if len(df)>2:
         try:
             co=safe_val(curr.get('Open')); cc=safe_val(curr['Close'])
@@ -398,7 +691,6 @@ def apply_all_filters(df, info):
             if pc<po and cc>co and cc>po and co<pc: filters.append(("ابتلاع صعودي",7,"pass","")); total+=7
             elif pc>po and cc<co and cc<po and co>pc: filters.append(("ابتلاع هبوطي",-7,"fail","")); total-=7
         except: pass
-
     if len(df)>20:
         try:
             rh=df['High'].tail(20).max(); rl=df['Low'].tail(20).min(); rng=rh-rl
@@ -407,56 +699,45 @@ def apply_all_filters(df, info):
                 if pos<0.15: filters.append(("قرب دعم",6,"pass",f"{pos*100:.0f}%")); total+=6
                 elif pos>0.85: filters.append(("قرب مقاومة",-6,"fail",f"{pos*100:.0f}%")); total-=6
         except: pass
-
     return total, filters, curr
 
 def get_fundamental_score(info):
     score=0; details=[]
-    if not info or not isinstance(info,dict):
-        return 0,[("لا بيانات",0,"warn","")]
-
+    if not info or not isinstance(info,dict): return 0,[("لا بيانات",0,"warn","")]
     pe = info.get('trailingPE') or info.get('forwardPE')
     if pe:
         pe=float(pe)
         if 5<pe<20: score+=5; details.append(("P/E مناسب",5,"pass",f"{pe:.1f}"))
         elif pe>40: score-=3; details.append(("P/E مرتفع",-3,"fail",f"{pe:.1f}"))
-
     margin = info.get('profitMargins')
     if margin:
         mp=float(margin)*100
         if mp>20: score+=4; details.append(("هامش ممتاز",4,"pass",f"{mp:.1f}%"))
         elif mp>10: score+=2; details.append(("هامش جيد",2,"pass",f"{mp:.1f}%"))
         elif mp<0: score-=4; details.append(("خاسرة",-4,"fail",f"{mp:.1f}%"))
-
     growth = info.get('revenueGrowth')
     if growth:
         gp=float(growth)*100
         if gp>20: score+=4; details.append(("نمو ممتاز",4,"pass",f"{gp:.1f}%"))
         elif gp>5: score+=2; details.append(("نمو جيد",2,"pass",f"{gp:.1f}%"))
         elif gp<-5: score-=3; details.append(("انخفاض",-3,"fail",f"{gp:.1f}%"))
-
     de = info.get('debtToEquity')
     if de:
         de=float(de)
         if de<50: score+=3; details.append(("ديون منخفضة",3,"pass",f"{de:.0f}"))
         elif de>200: score-=3; details.append(("ديون عالية",-3,"fail",f"{de:.0f}"))
-
     if not details: details.append(("لا بيانات",0,"warn",""))
     return score, details
 
 def get_news_score(ai_client, ticker, name):
-    news_data = web_search_news(f"{name} {ticker} financial news", max_results=5)
-
-    if not news_data and not ai_client:
-        return 0, [("أخبار غير متاحة",0,"warn","")]
-
+    news_data = multi_search_news(f"{name} {ticker} financial news", max_results=5)
+    if not news_data and not ai_client: return 0, [("أخبار غير متاحة",0,"warn","")]
     news_context = ""
     if news_data:
         news_context = "\n".join([f"- [{r.get('date','')}] {r.get('title','')}: {r.get('body','')[:150]}" for r in news_data[:5]])
-
     if not ai_client:
-        pos_words = ['surge','rise','gain','bull','up','high','record','growth','صعود','ارتفاع']
-        neg_words = ['drop','fall','crash','bear','down','low','loss','decline','هبوط','انخفاض']
+        pos_words = ['surge','rise','gain','bull','up','high','record','growth','صعود','ارتفاع','أرباح','profit']
+        neg_words = ['drop','fall','crash','bear','down','low','loss','decline','هبوط','انخفاض','خسارة']
         text = news_context.lower()
         pos = sum(1 for w in pos_words if w in text)
         neg = sum(1 for w in neg_words if w in text)
@@ -466,11 +747,10 @@ def get_news_score(ai_client, ticker, name):
         for r in news_data[:2]:
             details.append((f"📰 {r.get('title','')[:50]}",0,"warn",""))
         return sc, details
-
     try:
         resp = ai_client.chat_completion(
             messages=[{"role":"system","content":"محلل أخبار. JSON فقط."},
-                {"role":"user","content":f'حلل هذه الأخبار عن {name} ({ticker}):\n{news_context}\nJSON: {{"news_sentiment":"إيجابي/سلبي/محايد","score":-10 إلى 10,"key_events":["حدث"],"impact":"تأثير"}}'}],
+                {"role":"user","content":f'حلل الأخبار عن {name} ({ticker}):\n{news_context}\nJSON: {{"news_sentiment":"إيجابي/سلبي/محايد","score":-10 إلى 10,"key_events":["حدث"],"impact":"تأثير"}}'}],
             max_tokens=250)
         txt = resp.choices[0].message.content.strip()
         if "```" in txt:
@@ -482,18 +762,16 @@ def get_news_score(ai_client, ticker, name):
         ns = int(data.get('score',0))
         st_t = "pass" if ns>0 else ("fail" if ns<0 else "warn")
         d = [(f"أخبار: {data.get('news_sentiment','محايد')}",ns,st_t,data.get('impact',''))]
-        for ev in data.get('key_events',[])[:3]:
-            d.append((f"📰 {ev}",0,"warn",""))
+        for ev in data.get('key_events',[])[:3]: d.append((f"📰 {ev}",0,"warn",""))
         return ns, d
-    except:
-        return 0, [("فشل تحليل الأخبار",0,"warn","")]
+    except: return 0, [("فشل تحليل الأخبار",0,"warn","")]
 
 def get_ai_final_decision(ai_client, ticker, name, tech, fund, news, filters, price, hint):
     if not ai_client: return None
-    market_data = web_search(f"{name} {ticker} price forecast today {datetime.now().strftime('%Y-%m')}", max_results=3)
+    market_results, _ = multi_search(f"{name} {ticker} price forecast today {datetime.now().strftime('%Y-%m')}", max_results=3)
     market_context = ""
-    if market_data:
-        market_context = "\nمعلومات حديثة:\n"+"\n".join([f"- {r.get('title','')}: {r.get('body','')[:100]}" for r in market_data[:3]])
+    if market_results:
+        market_context = "\nمعلومات حديثة:\n"+"\n".join([f"- {r.get('title','')}: {r.get('body','')[:100]}" for r in market_results[:3]])
     top_f = " | ".join([f"{f[0]}({f[1]:+d})" for f in filters[:8]])
     try:
         resp = ai_client.chat_completion(
@@ -545,34 +823,25 @@ def build_filters_text(tech_filters,tech_score,fund_details,fund_score,news_deta
 def full_analysis(ticker, name, tf_key, ai_client, require_strong=False):
     df, info = fetch_data(ticker, tf_key)
     if df is None or len(df)<=15: return None
-
     df = calculate_indicators(df)
     tech_score, tech_filters, curr = apply_all_filters(df, info)
     fund_score, fund_details = get_fundamental_score(info)
     news_score, news_details = get_news_score(ai_client, ticker, name)
     pre_total = tech_score+fund_score+news_score
-
     ai_dec = get_ai_final_decision(ai_client,ticker,name,tech_score,fund_score,news_score,tech_filters,safe_val(curr['Close']),pre_total)
     ai_score=0; ai_reasoning=""; ai_confidence=0; ai_risk="متوسط"
-
     if ai_dec and isinstance(ai_dec,dict):
-        ai_score=int(ai_dec.get('ai_score',0))
-        ai_reasoning=ai_dec.get('reasoning','')
-        ai_confidence=int(ai_dec.get('confidence',0))
-        ai_risk=ai_dec.get('risk','متوسط')
+        ai_score=int(ai_dec.get('ai_score',0)); ai_reasoning=ai_dec.get('reasoning','')
+        ai_confidence=int(ai_dec.get('confidence',0)); ai_risk=ai_dec.get('risk','متوسط')
         if require_strong:
             dt=ai_dec.get('decision','تجنب')
             if ai_confidence<70 or dt=='تجنب': return None
-
     final_total=pre_total+ai_score
     if require_strong and abs(final_total)<20: return None
-
     direction="buy" if final_total>0 else "sell"
-    tgts=calc_targets(curr,final_total)
-    price=safe_val(curr['Close'])
+    tgts=calc_targets(curr,final_total); price=safe_val(curr['Close'])
     sig_label,sig_class=final_signal(final_total)
     filters_text=build_filters_text(tech_filters,tech_score,fund_details,fund_score,news_details,news_score,ai_score,ai_reasoning,ai_confidence)
-
     return {'ticker':ticker,'name':name,'price':price,'direction':direction,'signal':sig_label,
         'signal_class':sig_class,'total_score':final_total,'tech_score':tech_score,'fund_score':fund_score,
         'news_score':news_score,'ai_score':ai_score,'ai_reasoning':ai_reasoning,'ai_confidence':ai_confidence,
@@ -586,7 +855,6 @@ def smart_update_signal(sig_row):
     entry_time_str=sig_row.get('timestamp','')
     sig_tf=sig_row.get('timeframe','4 ساعات')
     track_config=TRACKING_INTERVALS.get(sig_tf,{"interval":"1h","period":"1mo"})
-
     try:
         stock=yf.Ticker(ticker)
         hist=stock.history(period=track_config["period"],interval=track_config["interval"])
@@ -598,7 +866,6 @@ def smart_update_signal(sig_row):
         if candles.empty: candles=hist.tail(50)
         current_price=float(hist['Close'].iloc[-1])
         hit_status='active'; hit_time=''; hit_price=0; tp1_hit=False
-
         for idx,candle in candles.iterrows():
             ch=float(candle['High']); cl=float(candle['Low']); ct=str(idx)
             if is_buy:
@@ -619,7 +886,6 @@ def smart_update_signal(sig_row):
                 elif ch>=sl: hit_status='sl_hit'; hit_time=ct; hit_price=sl; break
                 elif cl<=tp2: hit_status='tp_hit'; hit_time=ct; hit_price=tp2; break
                 if cl<=tp1: tp1_hit=True
-
         if hit_status=='tp_hit':
             progress=100.0; pnl=((tp2-entry)/entry*100) if is_buy else ((entry-tp2)/entry*100)
         elif hit_status=='sl_hit':
@@ -627,8 +893,7 @@ def smart_update_signal(sig_row):
         else:
             if is_buy: td=tp2-entry; cd=current_price-entry; pnl=((current_price-entry)/entry*100)
             else: td=entry-tp2; cd=entry-current_price; pnl=((entry-current_price)/entry*100)
-            progress=(cd/td*100) if td!=0 else 0
-            progress=max(0,min(100,progress))
+            progress=(cd/td*100) if td!=0 else 0; progress=max(0,min(100,progress))
             if tp1_hit and progress<50: progress=50
         return {'current_price':current_price,'status':hit_status,'progress':progress,'pnl':pnl,'hit_time':hit_time,'hit_price':hit_price}
     except: return None
@@ -641,8 +906,7 @@ def background_scan(assets_dict, scan_tf, ai_token):
     total=len(assets_dict); found=0; scanned=0
     db.set_scan_status(True,0,total,0,0,'بدء...')
     for name,tick in assets_dict.items():
-        scanned+=1
-        db.set_scan_status(True,(scanned/total)*100,total,scanned,found,name)
+        scanned+=1; db.set_scan_status(True,(scanned/total)*100,total,scanned,found,name)
         try:
             result=full_analysis(tick,name,scan_tf,ai_client,require_strong=True)
             if result and result['price']>0:
@@ -652,8 +916,7 @@ def background_scan(assets_dict, scan_tf, ai_token):
                     float(result['tech_score']),float(result['fund_score']),float(result['news_score']),
                     float(result['ai_score']),str(result['filters_text']),str(result['ai_reasoning']))
                 if added: found+=1
-        except Exception as e:
-            print(f"Error scanning {name}: {e}"); continue
+        except Exception as e: print(f"Error scanning {name}: {e}"); continue
         time.sleep(0.5)
     db.set_scan_status(False,100,total,scanned,found,'اكتمل')
 
@@ -676,15 +939,15 @@ if scan_st and isinstance(scan_st,dict):
     scan_progress=float(scan_st.get('progress',0) or 0)
     scan_current=scan_st.get('current_asset','')
     if is_running:
-        st.markdown(f'<div class="scan-banner"><span>🔄 جاري المسح: {scan_current} ({scan_scanned}/{scan_total})</span><span>وجد: {scan_found} إشارة</span></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="scan-banner"><span>🔄 المسح: {scan_current} ({scan_scanned}/{scan_total})</span><span>وجد: {scan_found}</span></div>',unsafe_allow_html=True)
         st.progress(scan_progress/100); time.sleep(3); st.rerun()
     elif st.session_state.get('scan_running',False):
         st.session_state.scan_running=False; st.session_state.scan_complete=True; st.session_state.scan_results=scan_found
 
 if st.session_state.get('scan_complete',False):
     n_results=st.session_state.get('scan_results',0)
-    if n_results>0: st.markdown(f'<div class="scan-done-banner">✅ اكتمل المسح! {n_results} إشارة قوية</div>',unsafe_allow_html=True)
-    else: st.markdown('<div class="scan-done-zero">⚠️ اكتمل المسح! لا إشارات قوية حالياً.</div>',unsafe_allow_html=True)
+    if n_results>0: st.markdown(f'<div class="scan-done-banner">✅ اكتمل! {n_results} إشارة</div>',unsafe_allow_html=True)
+    else: st.markdown('<div class="scan-done-zero">⚠️ لا إشارات قوية حالياً</div>',unsafe_allow_html=True)
     st.session_state.scan_complete=False
 
 with st.expander("☰ القائمة",expanded=False):
@@ -708,19 +971,16 @@ if st.session_state.current_view=="signals":
         with sc1: scan_types=st.multiselect("الأصول",["فوركس","عملات رقمية","أسهم","الكل"],default=["الكل"])
         with sc2: scan_tf=st.selectbox("الإطار",list(TIMEFRAMES.keys()),index=2)
         with sc3: specific=st.text_input("زوج محدد",placeholder="EURUSD=X")
-
     ac1,ac2,ac3,ac4=st.columns(4)
-    with ac1: scan_btn=st.button("🔍 مسح شامل",type="primary",use_container_width=True)
-    with ac2: update_btn=st.button("🔄 تحديث ذكي",use_container_width=True)
+    with ac1: scan_btn=st.button("🔍 مسح",type="primary",use_container_width=True)
+    with ac2: update_btn=st.button("🔄 تحديث",use_container_width=True)
     with ac3: clear_btn=st.button("🗑️ حذف",use_container_width=True)
     with ac4: refresh_btn=st.button("♻️ تحديث",use_container_width=True)
-
     if refresh_btn: st.rerun()
-    if clear_btn: db.delete_all_active(); st.success("✅ تم الحذف"); time.sleep(1); st.rerun()
-
+    if clear_btn: db.delete_all_active(); st.success("✅"); time.sleep(1); st.rerun()
     if scan_btn:
         current_scan=db.get_scan_status()
-        if current_scan and current_scan.get('is_running',False): st.warning("⚠️ المسح قيد التشغيل!")
+        if current_scan and current_scan.get('is_running',False): st.warning("⚠️ قيد التشغيل!")
         else:
             assets={}
             if specific.strip(): assets[specific.strip()]=specific.strip()
@@ -730,12 +990,11 @@ if st.session_state.current_view=="signals":
                     if "فوركس" in scan_types: assets.update(FOREX_PAIRS)
                     if "عملات رقمية" in scan_types: assets.update(CRYPTO_PAIRS)
                     if "أسهم" in scan_types: assets.update(STOCKS)
-            if not assets: st.warning("اختر أصول أولاً")
+            if not assets: st.warning("اختر أصول")
             else:
                 st.session_state.scan_running=True
-                scan_thread=threading.Thread(target=background_scan,args=(assets,scan_tf,st.secrets.get("HF_TOKEN","")),daemon=True)
-                scan_thread.start(); st.success(f"🚀 بدأ المسح لـ {len(assets)} أصل"); time.sleep(2); st.rerun()
-
+                threading.Thread(target=background_scan,args=(assets,scan_tf,st.secrets.get("HF_TOKEN","")),daemon=True).start()
+                st.success(f"🚀 بدأ المسح لـ {len(assets)}"); time.sleep(2); st.rerun()
     if update_btn:
         active=db.get_active_signals()
         if active:
@@ -744,25 +1003,15 @@ if st.session_state.current_view=="signals":
                 prog.progress((i+1)/len(active)); stat.text(f"🔄 {sr.get('asset_name','')} ({i+1}/{len(active)})")
                 result=smart_update_signal(sr)
                 if result:
-                    db.update_signal_status(sr['id'],result['current_price'],result['status'],result['progress'],result['pnl'],result.get('hit_time',''),result.get('hit_price',0))
-                    uc+=1
-            prog.empty(); stat.empty(); st.success(f"✅ تم التحديث: {uc} توصية"); time.sleep(1); st.rerun()
-        else: st.warning("لا توصيات نشطة")
+                    db.update_signal_status(sr['id'],result['current_price'],result['status'],result['progress'],result['pnl'],result.get('hit_time',''),result.get('hit_price',0)); uc+=1
+            prog.empty(); stat.empty(); st.success(f"✅ {uc} توصية"); time.sleep(1); st.rerun()
+        else: st.warning("لا توصيات")
 
-    st.subheader("📊 التوصيات النشطة")
+    st.subheader("📊 النشطة")
     try: sigs=db.get_active_signals()
     except: sigs=[]
-
-    with st.expander("🔧 تشخيص",expanded=False):
-        st.write(f"نشطة: {len(sigs) if sigs else 0}")
-        scan_info=db.get_scan_status()
-        if scan_info:
-            st.write(f"حالة المسح: {'يعمل' if scan_info.get('is_running') else 'متوقف'}")
-            st.write(f"إشارات: {scan_info.get('found_signals',0)}")
-        if st.button("🔄 إعادة قراءة"): st.rerun()
-
     if sigs and len(sigs)>0:
-        st.success(f"📊 نشطة: {len(sigs)}")
+        st.success(f"📊 {len(sigs)} نشطة")
         for sr in sigs:
             try:
                 ib=sr.get('direction','buy')=='buy'; clr="#00ff88" if ib else "#ff4444"
@@ -776,36 +1025,27 @@ if st.session_state.current_view=="signals":
                 sstr=float(sr.get('strength',0) or 0)
                 ts=float(sr.get('technical_score',0) or 0); fs=float(sr.get('fundamental_score',0) or 0)
                 ns=float(sr.get('news_score',0) or 0); ais=float(sr.get('ai_score',0) or 0)
-
                 st.markdown(f"""
                 <div class="rec-card" style="border-left:5px solid {clr};">
                     <div style="display:flex;justify-content:space-between;">
-                        <h3 style="margin:0;">{sn} <span style="font-size:0.7em;color:#888;">{stk} | {stf}</span></h3>
-                        <div><h3 style="color:{clr};margin:0;">{dt}</h3><span style="font-size:0.8em;color:#aaa;">قوة: {sstr:.0f}</span></div>
+                        <h3 style="margin:0;">{sn} <span style="font-size:0.7em;color:#888;">{stk}|{stf}</span></h3>
+                        <div><h3 style="color:{clr};margin:0;">{dt}</h3><span style="font-size:0.8em;color:#aaa;">قوة:{sstr:.0f}</span></div>
                     </div>
                     <div style="font-size:13px;margin:10px 0;display:flex;justify-content:space-between;flex-wrap:wrap;">
-                        <span>🏁 {se:.4f}</span><span>🏷️ {sc:.4f}</span>
-                        <span>🎯1: {s1v:.4f}</span><span>🎯2: {s2v:.4f}</span>
-                        <span>🎯3: {s3v:.4f}</span><span>🛑 {ssl:.4f}</span>
+                        <span>🏁{se:.4f}</span><span>🏷️{sc:.4f}</span><span>🎯1:{s1v:.4f}</span><span>🎯2:{s2v:.4f}</span><span>🎯3:{s3v:.4f}</span><span>🛑{ssl:.4f}</span>
                     </div>
                     <div style="display:flex;gap:10px;margin:8px 0;font-size:12px;">
-                        <span style="color:#00bcd4;">فني: {ts:+.0f}</span>
-                        <span style="color:#ff9800;">أساسي: {fs:+.0f}</span>
-                        <span style="color:#e91e63;">أخبار: {ns:+.0f}</span>
-                        <span style="color:#9c27b0;">AI: {ais:+.0f}</span>
+                        <span style="color:#00bcd4;">فني:{ts:+.0f}</span><span style="color:#ff9800;">أساسي:{fs:+.0f}</span><span style="color:#e91e63;">أخبار:{ns:+.0f}</span><span style="color:#9c27b0;">AI:{ais:+.0f}</span>
                     </div>
-                    <div style="background:#111;height:10px;border-radius:5px;">
-                        <div style="width:{max(0,min(100,sp))}%;background:{clr};height:100%;border-radius:5px;"></div>
-                    </div>
-                    <div style="text-align:right;font-size:12px;color:#ccc;">تقدم: {sp:.1f}% | ربح: <span style="color:{clr}">{spnl:.2f}%</span></div>
+                    <div style="background:#111;height:10px;border-radius:5px;"><div style="width:{max(0,min(100,sp))}%;background:{clr};height:100%;border-radius:5px;"></div></div>
+                    <div style="text-align:right;font-size:12px;color:#ccc;">تقدم:{sp:.1f}%|ربح:<span style="color:{clr}">{spnl:.2f}%</span></div>
                 </div>""",unsafe_allow_html=True)
-
-                with st.expander(f"📋 تفاصيل - {sn}"):
+                with st.expander(f"📋 {sn}"):
                     fd=sr.get('filters_detail',''); ar=sr.get('ai_reasoning','')
                     if fd: st.text(fd)
                     if ar: st.info(f"🤖 {ar}")
-            except Exception as e: st.error(f"خطأ: {e}"); continue
-    else: st.info("📭 لا توصيات نشطة. اضغط '🔍 مسح شامل'")
+            except Exception as e: st.error(f"خطأ: {e}")
+    else: st.info("📭 لا توصيات. اضغط مسح شامل")
 
     st.markdown("---"); st.subheader("📜 المنتهية")
     try: closed=db.get_closed_signals()
@@ -813,15 +1053,10 @@ if st.session_state.current_view=="signals":
     if closed:
         hd=[]
         for cr in closed:
-            try:
-                hd.append({"التاريخ":cr.get('timestamp',''),"الأصل":cr.get('asset_name',''),
-                    "الاتجاه":"شراء" if cr.get('direction')=='buy' else "بيع",
-                    "النتيجة":"✅" if cr.get('status')=='tp_hit' else "❌",
-                    "سعر الإصابة":f"{float(cr.get('hit_price',0) or 0):.4f}",
-                    "الربح%":round(float(cr.get('pnl_pct',0) or 0),2)})
+            try: hd.append({"التاريخ":cr.get('timestamp',''),"الأصل":cr.get('asset_name',''),"الاتجاه":"شراء" if cr.get('direction')=='buy' else "بيع","النتيجة":"✅" if cr.get('status')=='tp_hit' else "❌","الربح%":round(float(cr.get('pnl_pct',0) or 0),2)})
             except: continue
         if hd: st.dataframe(pd.DataFrame(hd),use_container_width=True,hide_index=True)
-    else: st.info("لا توصيات منتهية")
+    else: st.info("لا منتهية")
 
 # ============================================================
 # التحليل
@@ -835,67 +1070,48 @@ elif st.session_state.current_view=="analysis":
         elif ac=="عملات رقمية": sel=st.selectbox("الأصل",list(CRYPTO_PAIRS.keys())); ticker=CRYPTO_PAIRS[sel]
         else: sel=st.selectbox("الأصل",list(STOCKS.keys())); ticker=STOCKS[sel]
     with a3: tf_l=st.selectbox("الإطار",list(TIMEFRAMES.keys()),index=2)
-    with a4: abtn=st.button("🚀 تحليل شامل",type="primary",use_container_width=True)
-
+    with a4: abtn=st.button("🚀 تحليل",type="primary",use_container_width=True)
     if abtn:
         with st.spinner("جاري التحليل..."):
             result=full_analysis(ticker,sel,tf_l,client,require_strong=False)
             if result:
                 st.session_state.analysis_result=result
-                try:
-                    db.save_analysis(ticker,tf_l,result['signal'],result['signal_class'],
-                        result['total_score'],result['price'],result['targets'],
-                        {'final_decision':result['signal'],'risk_level':result['ai_risk']},
-                        result['tech_score'],result['fund_score'],result['news_score'],
-                        result['ai_score'],result['filters_text'],result['ai_reasoning'])
+                try: db.save_analysis(ticker,tf_l,result['signal'],result['signal_class'],result['total_score'],result['price'],result['targets'],{'final_decision':result['signal'],'risk_level':result['ai_risk']},result['tech_score'],result['fund_score'],result['news_score'],result['ai_score'],result['filters_text'],result['ai_reasoning'])
                 except: pass
             else: st.error("فشل التحليل")
-
     if 'analysis_result' in st.session_state:
         r=st.session_state.analysis_result
-        st.markdown(f'<div class="main-signal {r["signal_class"]}">{r["signal"]} ({r["total_score"]:.1f})<div style="font-size:16px;opacity:0.8;">{r["ticker"]} | {r["price"]:.4f}</div></div>',unsafe_allow_html=True)
-
+        st.markdown(f'<div class="main-signal {r["signal_class"]}">{r["signal"]} ({r["total_score"]:.1f})<div style="font-size:16px;opacity:0.8;">{r["ticker"]}|{r["price"]:.4f}</div></div>',unsafe_allow_html=True)
         mc1,mc2,mc3,mc4=st.columns(4)
         mc1.metric("📐 فني",f"{r['tech_score']:+d}"); mc2.metric("📊 أساسي",f"{r['fund_score']:+d}")
         mc3.metric("📰 أخبار",f"{r['news_score']:+d}"); mc4.metric("🤖 AI",f"{r['ai_score']:+d}")
-
         m1,m2,m3,m4,m5=st.columns(5)
         m1.metric("TP1",f"{r['targets']['tp1']:.4f}"); m2.metric("TP2",f"{r['targets']['tp2']:.4f}")
         m3.metric("TP3",f"{r['targets']['tp3']:.4f}"); m4.metric("SL",f"{r['targets']['sl']:.4f}",delta_color="inverse")
         m5.metric("R:R",f"1:{r['targets']['rr']:.1f}")
-
-        tab1,tab2,tab3,tab4,tab5=st.tabs(["📈 الرسم","📐 الفلاتر","📊 أساسي","📰 أخبار","🤖 AI"])
-
+        tab1,tab2,tab3,tab4,tab5=st.tabs(["📈 رسم","📐 فلاتر","📊 أساسي","📰 أخبار","🤖 AI"])
         with tab1:
             tv_s=to_tv_symbol(r['ticker']); tv_i=TV_INTERVALS.get(r['timeframe'],'D')
             st.components.v1.html(f'<div style="height:500px;width:100%"><div id="tv"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":"500","symbol":"{tv_s}","interval":"{tv_i}","theme":"dark","style":"1","locale":"ar","container_id":"tv"}});</script></div>',height=520)
-
         with tab2:
-            st.subheader(f"الفلاتر ({r['tech_score']:+d})")
             for f in r['tech_filters']:
                 i="✅" if f[2]=="pass" else ("❌" if f[2]=="fail" else "⚠️")
                 st.markdown(f"{i} **{f[0]}** ({f[1]:+d}) — {f[3]}")
-
         with tab3:
-            st.subheader(f"أساسي ({r['fund_score']:+d})")
             for f in r['fund_details']:
                 i="✅" if f[2]=="pass" else ("❌" if f[2]=="fail" else "⚠️")
                 st.markdown(f"{i} **{f[0]}** ({f[1]:+d}) — {f[3]}")
-
         with tab4:
-            st.subheader(f"أخبار ({r['news_score']:+d})")
             for f in r['news_details']:
                 i="✅" if f[2]=="pass" else ("❌" if f[2]=="fail" else "⚠️")
                 st.markdown(f"{i} **{f[0]}** ({f[1]:+d}) — {f[3]}")
-
         with tab5:
-            st.subheader(f"AI ({r['ai_score']:+d})")
             if r['ai_reasoning']:
                 st.info(f"🤖 {r['ai_reasoning']}"); st.write(f"📊 ثقة: **{r['ai_confidence']}%**")
                 risk=r.get('ai_risk','متوسط')
-                if risk=="عالي": st.error(f"⚠️ مخاطرة: {risk}")
-                elif risk=="منخفض": st.success(f"✅ مخاطرة: {risk}")
-                else: st.warning(f"⚡ مخاطرة: {risk}")
+                if risk=="عالي": st.error(f"⚠️ {risk}")
+                elif risk=="منخفض": st.success(f"✅ {risk}")
+                else: st.warning(f"⚡ {risk}")
             else: st.warning("AI غير مفعل")
 
 # ============================================================
@@ -903,118 +1119,143 @@ elif st.session_state.current_view=="analysis":
 # ============================================================
 elif st.session_state.current_view=="chart":
     if not st.session_state.get('chart_fullscreen'):
-        st.header("📊 الشارت المتقدم")
+        st.header("📊 الشارت")
         tc1,tc2,tc3,tc4=st.columns([2,2,1,1])
-        with tc1: chart_category=st.selectbox("الفئة",list(TV_SYMBOLS.keys()),key="chart_cat")
+        with tc1: chart_category=st.selectbox("الفئة",list(TV_SYMBOLS.keys()),key="cc")
         with tc2:
-            symbols_in_cat=TV_SYMBOLS[chart_category]
-            chart_asset=st.selectbox("الأصل",list(symbols_in_cat.keys()),key="chart_asset")
-            selected_symbol=symbols_in_cat[chart_asset]
+            sic=TV_SYMBOLS[chart_category]; ca=st.selectbox("الأصل",list(sic.keys()),key="ca"); selected_symbol=sic[ca]
         with tc3:
-            chart_tf=st.selectbox("الإطار",["1","5","15","30","60","240","D","W","M"],index=5,
-                format_func=lambda x:{"1":"1د","5":"5د","15":"15د","30":"30د","60":"1س","240":"4س","D":"يومي","W":"أسبوعي","M":"شهري"}.get(x,x),key="chart_tf")
+            ctf=st.selectbox("الإطار",["1","5","15","30","60","240","D","W","M"],index=5,
+                format_func=lambda x:{"1":"1د","5":"5د","15":"15د","30":"30د","60":"1س","240":"4س","D":"يومي","W":"أسبوعي","M":"شهري"}.get(x,x),key="ct")
         with tc4:
-            if st.button("🔲 ملء الشاشة",use_container_width=True):
-                st.session_state.chart_fullscreen=True; st.session_state.chart_symbol=selected_symbol; st.session_state.chart_interval=chart_tf; st.rerun()
-
+            if st.button("🔲 ملء",use_container_width=True):
+                st.session_state.chart_fullscreen=True; st.session_state.chart_symbol=selected_symbol; st.session_state.chart_interval=ctf; st.rerun()
         c1,c2=st.columns([3,1])
-        with c1: custom_symbol=st.text_input("رمز مخصص",placeholder="BINANCE:BTCUSDT",key="custom_sym")
+        with c1: cs=st.text_input("رمز مخصص",placeholder="BINANCE:BTCUSDT",key="cs")
         with c2:
-            if custom_symbol.strip(): selected_symbol=custom_symbol.strip(); st.success(f"✅ {selected_symbol}")
-
-        st.components.v1.html(f'<div id="tv_adv" style="height:650px;width:100%;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":650,"symbol":"{selected_symbol}","interval":"{chart_tf}","timezone":"Etc/UTC","theme":"dark","style":"1","locale":"ar","toolbar_bg":"#1a1a2e","enable_publishing":false,"hide_side_toolbar":false,"allow_symbol_change":true,"save_image":true,"studies":["MAExp@tv-basicstudies","RSI@tv-basicstudies","MACD@tv-basicstudies"],"show_popup_button":true,"popup_width":"1000","popup_height":"650","container_id":"tv_adv","withdateranges":true,"details":true,"hotlist":true,"calendar":true,"watchlist":true}});</script>',height=670)
+            if cs.strip(): selected_symbol=cs.strip(); st.success(f"✅ {selected_symbol}")
+        st.components.v1.html(f'<div id="tva" style="height:650px;width:100%;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":650,"symbol":"{selected_symbol}","interval":"{ctf}","timezone":"Etc/UTC","theme":"dark","style":"1","locale":"ar","toolbar_bg":"#1a1a2e","enable_publishing":false,"hide_side_toolbar":false,"allow_symbol_change":true,"save_image":true,"studies":["MAExp@tv-basicstudies","RSI@tv-basicstudies","MACD@tv-basicstudies"],"show_popup_button":true,"popup_width":"1000","popup_height":"650","container_id":"tva","withdateranges":true,"details":true,"hotlist":true,"calendar":true,"watchlist":true}});</script>',height=670)
     else:
-        if st.button("✕ خروج",key="exit_fs"): st.session_state.chart_fullscreen=False; st.rerun()
+        if st.button("✕ خروج",key="ef"): st.session_state.chart_fullscreen=False; st.rerun()
         sym=st.session_state.get('chart_symbol','FX:EURUSD'); intv=st.session_state.get('chart_interval','D')
         st.markdown('<style>.main .block-container{padding:0!important;max-width:100%!important;}</style>',unsafe_allow_html=True)
-        st.components.v1.html(f'<div id="tv_fs" style="height:95vh;width:100%;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":"95%","symbol":"{sym}","interval":"{intv}","timezone":"Etc/UTC","theme":"dark","style":"1","locale":"ar","toolbar_bg":"#1a1a2e","enable_publishing":false,"hide_side_toolbar":false,"allow_symbol_change":true,"save_image":true,"studies":["MAExp@tv-basicstudies","RSI@tv-basicstudies","MACD@tv-basicstudies","BB@tv-basicstudies"],"show_popup_button":true,"popup_width":"1200","popup_height":"800","container_id":"tv_fs","withdateranges":true,"details":true,"hotlist":true,"calendar":true,"watchlist":true}});</script>',height=900)
+        st.components.v1.html(f'<div id="tvf" style="height:95vh;width:100%;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":"95%","symbol":"{sym}","interval":"{intv}","timezone":"Etc/UTC","theme":"dark","style":"1","locale":"ar","toolbar_bg":"#1a1a2e","enable_publishing":false,"hide_side_toolbar":false,"allow_symbol_change":true,"save_image":true,"studies":["MAExp@tv-basicstudies","RSI@tv-basicstudies","MACD@tv-basicstudies","BB@tv-basicstudies"],"show_popup_button":true,"popup_width":"1200","popup_height":"800","container_id":"tvf","withdateranges":true,"details":true,"hotlist":true,"calendar":true,"watchlist":true}});</script>',height=900)
 
 # ============================================================
-# الدردشة مع بحث ويب
+# الدردشة - مع بحث ويب متعدد المصادر + أسعار مباشرة
 # ============================================================
 elif st.session_state.current_view=="chat":
     st.header("🤖 المستشار المالي الذكي")
-    if HAS_SEARCH:
-        st.caption("🌐 مدعوم ببحث الويب المباشر - معلومات محدثة لحظياً")
-    else:
-        st.caption("⚠️ أضف duckduckgo-search في requirements.txt لتفعيل البحث")
+    st.caption("🌐 أسعار مباشرة من Yahoo Finance + بحث متعدد المحركات")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"],unsafe_allow_html=True)
 
-    ui=st.chat_input("سؤالك...")
+    ui=st.chat_input("اسأل عن أي سعر أو أي موضوع مالي...")
 
     if ui:
         st.session_state.messages.append({"role":"user","content":ui})
         with st.chat_message("user"): st.markdown(ui)
 
         with st.chat_message("assistant"):
+            # 1. جلب البيانات
+            with st.spinner("🔍 جاري البحث وجلب الأسعار..."):
+                search_context, search_results, news_results, live_prices, sources_used = build_search_context(ui)
+
+            # 2. عرض الأسعار المباشرة فوراً
+            prices_html = format_live_prices_html(live_prices)
+            if prices_html:
+                st.markdown(prices_html, unsafe_allow_html=True)
+
+            # 3. إذا يوجد AI، استخدمه للتحليل
             if client:
                 try:
-                    search_context, search_results, news_results = "", [], []
-                    if HAS_SEARCH:
-                        with st.spinner("🔍 جاري البحث في الويب..."):
-                            search_context, search_results, news_results = build_search_context(ui)
+                    sp = f"""أنت مستشار مالي خبير. أجب بالعربية فقط.
+تاريخ ووقت الآن: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
 
-                    sp=f"""أنت مستشار مالي خبير. أجب بالعربية فقط.
-تاريخ اليوم: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
-
-قواعد:
-1. أجب بالعربية فقط
+قواعد صارمة:
+1. أجب بالعربية فقط دائماً
 2. ممنوع كتابة أي كود أو ```
-3. استخدم المعلومات الحديثة من نتائج البحث
-4. كن دقيقاً في الأرقام والتواريخ
-5. حذر من مخاطر التداول
+3. استخدم البيانات الحقيقية المرفقة أدناه - هذه بيانات حية وليست قديمة
+4. إذا وُجدت أسعار مباشرة، اذكرها بدقة مع التغير والنسبة
+5. اذكر المصدر (Yahoo Finance للأسعار)
+6. كن دقيقاً ومختصراً ومفيداً
+7. حذر من مخاطر التداول
+8. لا تقل "لا أستطيع" - البيانات مرفقة أدناه
 
 {search_context}"""
 
-                    ms=[{"role":"system","content":sp}]
+                    ms = [{"role":"system","content":sp}]
                     for m in st.session_state.messages[-6:]:
                         ms.append({"role":m["role"],"content":m["content"]})
 
-                    resp=client.chat_completion(messages=ms,max_tokens=800,stream=False)
-                    rt=resp.choices[0].message.content
-
+                    resp = client.chat_completion(messages=ms, max_tokens=800, stream=False)
+                    rt = resp.choices[0].message.content
                     if "```" in rt:
-                        cl=[];ic=False
+                        cl=[]; ic=False
                         for ln in rt.split('\n'):
                             if '```' in ln: ic=not ic; continue
                             if not ic: cl.append(ln)
                         rt='\n'.join(cl)
                     rt=rt.replace('`','')
 
-                    sources_html=format_sources_html(search_results,news_results)
-                    full_response=rt+"\n\n"+sources_html if sources_html else rt
+                    sources_html = format_sources_html(search_results, news_results, sources_used)
+                    full_response = prices_html + "\n\n" + rt + "\n\n" + sources_html
 
-                    st.markdown(full_response,unsafe_allow_html=True)
+                    st.markdown(rt, unsafe_allow_html=True)
+                    if sources_html:
+                        st.markdown(sources_html, unsafe_allow_html=True)
+
                     st.session_state.messages.append({"role":"assistant","content":full_response})
                 except Exception as e:
-                    st.error(f"⚠️ خطأ: {e}")
+                    # حتى لو فشل AI، نعرض البيانات
+                    fallback = ""
+                    if live_prices:
+                        fallback += "📊 **الأسعار المباشرة:**\n\n"
+                        for p in live_prices:
+                            arrow = "📈" if p['change']>=0 else "📉"
+                            fallback += f"{arrow} **{p['name']}**: {p['price']:,.2f} $ ({p['change_pct']:+.2f}%)\n"
+                    if news_results:
+                        fallback += "\n📰 **آخر الأخبار:**\n"
+                        for r in news_results[:3]:
+                            fallback += f"- {r.get('title','')}\n"
+                    if fallback:
+                        st.markdown(fallback)
+                        st.session_state.messages.append({"role":"assistant","content":prices_html+fallback})
+                    else:
+                        st.error(f"⚠️ خطأ: {e}")
             else:
-                if HAS_SEARCH:
-                    try:
-                        with st.spinner("🔍 جاري البحث..."):
-                            search_context,search_results,news_results=build_search_context(ui)
-                        if search_results or news_results:
-                            response="🔍 **نتائج البحث:**\n\n"
-                            if news_results:
-                                response+="**📰 آخر الأخبار:**\n"
-                                for r in news_results[:5]:
-                                    response+=f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
-                            if search_results:
-                                response+="**🔗 نتائج أخرى:**\n"
-                                for r in search_results[:5]:
-                                    response+=f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
-                            response+="\n⚠️ *أضف HF_TOKEN للتحليل الذكي*"
-                            sources_html=format_sources_html(search_results,news_results)
-                            full_response=response+"\n\n"+sources_html
-                            st.markdown(full_response,unsafe_allow_html=True)
-                            st.session_state.messages.append({"role":"assistant","content":full_response})
-                        else: st.error("لم يتم العثور على نتائج")
-                    except: st.error("⚠️ خطأ في البحث")
-                else:
-                    st.error("⚠️ أضف HF_TOKEN في إعدادات التطبيق")
+                # بدون AI - نعرض البيانات مباشرة
+                response = ""
+                if live_prices:
+                    response += "📊 **الأسعار المباشرة (Yahoo Finance):**\n\n"
+                    for p in live_prices:
+                        arrow = "📈" if p['change']>=0 else "📉"
+                        response += f"{arrow} **{p['name']}**: **{p['price']:,.2f}** $ | التغير: {p['change']:+,.2f} ({p['change_pct']:+.2f}%)\n"
+                        response += f"   الأعلى: {p['high']:,.2f} | الأدنى: {p['low']:,.2f} | الافتتاح: {p['open']:,.2f}\n\n"
+
+                if news_results:
+                    response += "📰 **آخر الأخبار:**\n"
+                    for r in news_results[:5]:
+                        response += f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
+
+                if search_results:
+                    response += "🔗 **معلومات إضافية:**\n"
+                    for r in search_results[:3]:
+                        response += f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
+
+                if not response:
+                    response = "⚠️ لم أجد نتائج. حاول بكلمات مختلفة."
+
+                sources_html = format_sources_html(search_results, news_results, sources_used)
+                full_response = prices_html + "\n\n" + response + "\n\n" + sources_html
+
+                st.markdown(response, unsafe_allow_html=True)
+                if sources_html:
+                    st.markdown(sources_html, unsafe_allow_html=True)
+
+                st.session_state.messages.append({"role":"assistant","content":full_response})
 
     if st.session_state.messages:
         if st.button("🗑️ مسح المحادثة"): st.session_state.messages=[]; st.rerun()
