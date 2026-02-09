@@ -84,7 +84,6 @@ class MistralClient:
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        # استخدام موديل متطور من ميسترال
         data = {
             "model": "mistral-large-latest", 
             "messages": messages,
@@ -95,7 +94,6 @@ class MistralClient:
             resp = requests.post(self.url, headers=headers, json=data, timeout=60)
             if resp.status_code != 200:
                 print(f"Mistral Error {resp.status_code}: {resp.text}")
-                # محاولة استخدام موديل أصغر في حالة الخطأ أو نفاذ الكوتا
                 if resp.status_code == 429 or resp.status_code == 400:
                     data["model"] = "mistral-small-latest"
                     resp = requests.post(self.url, headers=headers, json=data, timeout=60)
@@ -106,7 +104,6 @@ class MistralClient:
             print(f"Mistral API Exception: {e}")
             raise e
 
-# هياكل وهمية لتقليد استجابة HuggingFace Client حتى لا نغير باقي الكود
 class MockMessage:
     def __init__(self, content): self.content = content
 class MockChoice:
@@ -151,89 +148,80 @@ def log_manager_action(message):
         })
     except: pass
 
-def execute_paper_trades(signals_found, ai_client):
-    if not signals_found or not ai_client: return
+def process_single_paper_trade(signal_data, ai_client):
+    """
+    معالجة إشارة واحدة فورياً:
+    1. التحقق من الرصيد.
+    2. استشارة AI.
+    3. التنفيذ أو التجاهل.
+    """
+    if not signal_data or not ai_client: return
+
+    # جلب الرصيد الحالي
+    try:
+        balance = float(firebase_db.reference('paper_trading/balance').get() or 0.0)
+    except:
+        balance = 0.0
     
-    balance, positions, _ = get_paper_portfolio()
     current_equity = balance
     
-    candidates = []
-    for sig in signals_found:
-        if abs(sig['total_score']) >= 20:
-            candidates.append({
-                'ticker': sig['ticker'],
-                'name': sig['name'],
-                'signal': sig['signal'],
-                'price': sig['price'],
-                'tp': sig['targets']['tp2'],
-                'sl': sig['targets']['sl'],
-                'score': sig['total_score']
-            })
-    
-    if not candidates:
-        log_manager_action("قمت بمراجعة نتائج المسح، لم أجد فرصاً قوية بما يكفي للمخاطرة برأس المال الآن.")
-        return
-
+    # تحضير رسالة للذكاء الاصطناعي
     prompt = f"""
-    أنت مدير محفظة استثمارية ذكي جداً. رأس مالك الحالي المتاح: {current_equity}$.
-    لديك قائمة بفرص تداول محتملة (Signals).
-    المطلوب:
-    1. اختر أفضل 1-3 صفقات للدخول فيها الآن.
-    2. حدد حجم الاستثمار بالدولار لكل صفقة (المخاطرة يجب أن تكون مدروسة، لا تخاطر بأكثر من 5% من رأس المال في الصفقة الواحدة كخسارة محتملة).
-    3. اشرح لماذا اخترت هذه الصفقات بأسلوب مدير محفظة محترف.
-    
-    الفرص المتاحة:
-    {json.dumps(candidates)}
+    أنت مدير محفظة ذكي. الرصيد المتاح: {current_equity}$.
+    وصلتك إشارة تداول جديدة:
+    - الأصل: {signal_data['name']} ({signal_data['ticker']})
+    - الاتجاه: {signal_data['signal']}
+    - السعر: {signal_data['price']}
+    - القوة: {signal_data['total_score']}
+    - الهدف: {signal_data['targets']['tp2']}
+    - الوقف: {signal_data['targets']['sl']}
 
-    رد بصيغة JSON فقط:
+    قرر فوراً: هل تدخل هذه الصفقة؟ وكم تستثمر؟
+    JSON فقط:
     {{
-        "trades": [
-            {{
-                "ticker": "رمز",
-                "action": "BUY/SELL",
-                "entry_price": 0.0,
-                "invest_amount": 0.0,
-                "reason": "سبب الاختيار باختصار"
-            }}
-        ],
-        "log_message": "رسالة لليوميات تشرح قراراتك العامة لهذا المسح"
+        "decision": "ENTER" أو "SKIP",
+        "invest_amount": 0.0,
+        "reason": "سبب مختصر جدا"
     }}
     """
     
     try:
-        resp = ai_client.chat_completion(messages=[{"role":"user", "content": prompt}], max_tokens=1000)
+        # استدعاء AI
+        resp = ai_client.chat_completion(messages=[{"role":"user", "content": prompt}], max_tokens=300)
         txt = resp.choices[0].message.content.strip()
-        if "```" in txt:
-             txt = txt.split("```")[1].replace("json", "").strip()
+        if "```" in txt: txt = txt.split("```")[1].replace("json", "").strip()
         
         decision = json.loads(txt)
-        new_trades_count = 0
-        for trade in decision.get('trades', []):
-            orig = next((x for x in candidates if x['ticker'] == trade['ticker']), None)
-            if orig and balance >= trade['invest_amount']:
+        
+        if decision.get('decision') == 'ENTER':
+            amount = float(decision.get('invest_amount', 0))
+            if amount > 0 and balance >= amount:
+                # تنفيذ الصفقة
                 firebase_db.reference('paper_trading/positions').push({
-                    'ticker': trade['ticker'],
-                    'name': orig['name'],
-                    'type': 'buy' if 'buy' in orig['signal'].lower() else 'sell',
-                    'entry_price': float(orig['price']),
-                    'amount': float(trade['invest_amount']),
-                    'tp': float(orig['tp']),
-                    'sl': float(orig['sl']),
+                    'ticker': signal_data['ticker'],
+                    'name': signal_data['name'],
+                    'type': 'buy' if 'buy' in signal_data['signal'].lower() else 'sell',
+                    'entry_price': float(signal_data['price']),
+                    'amount': amount,
+                    'tp': float(signal_data['targets']['tp2']),
+                    'sl': float(signal_data['targets']['sl']),
                     'open_time': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'reason': trade.get('reason', ''),
+                    'reason': decision.get('reason', ''),
                     'status': 'OPEN'
                 })
-                balance -= float(trade['invest_amount'])
-                new_trades_count += 1
-        
-        firebase_db.reference('paper_trading/balance').set(balance)
-        if new_trades_count > 0:
-            log_manager_action(f"✅ تم فتح {new_trades_count} صفقات جديدة. {decision.get('log_message', '')}")
+                # تحديث الرصيد
+                new_balance = balance - amount
+                firebase_db.reference('paper_trading/balance').set(new_balance)
+                
+                log_manager_action(f"✅ دخلت صفقة جديدة على {signal_data['name']} بقيمة {amount}$. السبب: {decision.get('reason','')}")
+            else:
+                log_manager_action(f"⚠️ رفضت الصفقة على {signal_data['name']} بسبب نقص الرصيد أو مبلغ غير صالح.")
         else:
-            log_manager_action(f"⚠️ قررت عدم الدخول في صفقات جديدة. {decision.get('log_message', '')}")
+            # تم التجاهل (لا نسجل في اللوج لتجنب الإزعاج، إلا إذا أردت)
+            pass
             
     except Exception as e:
-        log_manager_action(f"حدث خطأ أثناء محاولة المدير اتخاذ قرار: {e}")
+        print(f"AI Manager Error: {e}")
 
 def update_paper_positions_status():
     balance, positions, _ = get_paper_portfolio()
@@ -802,7 +790,6 @@ def background_scan(assets_dict,scan_tf,ai_token):
     aic = MistralClient(ai_token) if ai_token else None
     
     total=len(assets_dict);found=0;scanned=0;db.set_scan_status(True,0,total,0,0,'بدء...')
-    strong_signals = []
     
     for name,tick in assets_dict.items():
         scanned+=1;db.set_scan_status(True,(scanned/total)*100,total,scanned,found,name)
@@ -810,16 +797,17 @@ def background_scan(assets_dict,scan_tf,ai_token):
             r=full_analysis(tick,name,scan_tf,aic,require_strong=True)
             if r and r['price']>0:
                 if db.add_signal(str(tick),str(name),r['direction'],float(r['price']),float(r['targets']['tp1']),float(r['targets']['tp2']),float(r['targets']['tp3']),float(r['targets']['sl']),float(abs(r['total_score'])),str(scan_tf),float(r['tech_score']),float(r['fund_score']),float(r['news_score']),float(r['ai_score']),str(r['filters_text']),str(r['ai_reasoning'])):found+=1
-                strong_signals.append(r)
+                
+                # إرسال الإشارة فوراً لمدير المحفظة (Paper Trading) لاتخاذ قرار
+                if aic:
+                    process_single_paper_trade(r, aic)
+                    
         except Exception as e:print(f"Scan err {name}:{e}");continue
         
         # الانتظار لمدة دقيقة (60 ثانية) لتجنب Rate Limit الخاص بـ Mistral
         time.sleep(60)
         
     db.set_scan_status(False,100,total,scanned,found,'اكتمل')
-    
-    if aic and strong_signals:
-        execute_paper_trades(strong_signals, aic)
 
 # ============================================================
 # MAIN UI
@@ -856,7 +844,7 @@ if st.session_state.current_view=="signals":
             st.session_state.scan_running=False;st.session_state.scan_complete=True;st.session_state.scan_results=sf
     if st.session_state.get('scan_complete',False):
         nr=st.session_state.get('scan_results',0)
-        if nr>0:st.markdown(f'<div class="scan-done-banner">✅ {nr} إشارة. تم إرسالها لمدير المحفظة للتحليل.</div>',unsafe_allow_html=True)
+        if nr>0:st.markdown(f'<div class="scan-done-banner">✅ {nr} إشارة.</div>',unsafe_allow_html=True)
         else:st.markdown('<div class="scan-done-zero">⚠️ لا إشارات</div>',unsafe_allow_html=True)
         st.session_state.scan_complete=False
 
@@ -886,7 +874,6 @@ if st.session_state.current_view=="signals":
                     if "أسهم" in scan_types:assets.update(STOCKS)
             if not assets:st.warning("اختر أصول")
             else:
-                # نمرر مفتاح Mistral هنا بدلاً من HF
                 st.session_state.scan_running=True;threading.Thread(target=background_scan,args=(assets,scan_tf,st.secrets.get("MISTRAL_API_KEY","")),daemon=True).start();st.success(f"🚀 {len(assets)} أصل");time.sleep(2);st.rerun()
     if update_btn:
         active=db.get_active_signals(); paper_updates = update_paper_positions_status()
