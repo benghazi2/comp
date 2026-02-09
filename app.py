@@ -4,7 +4,6 @@ import yfinance as yf
 import pandas as pd
 import ta
 import numpy as np
-from huggingface_hub import InferenceClient
 import json
 import time
 from datetime import datetime, timedelta
@@ -13,7 +12,6 @@ import threading
 import requests
 from urllib.parse import quote_plus
 import db
-# نحتاج لاستيراد firebase_admin للوصول المباشر للقاعدة في الميزات الجديدة
 import firebase_admin
 from firebase_admin import db as firebase_db
 
@@ -73,14 +71,61 @@ html,body,[class*="css"]{font-family:'Cairo',sans-serif}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
-# Paper Trading Logic (New Implementation)
+# Mistral API Client Wrapper
+# ============================================================
+class MistralClient:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.url = "https://api.mistral.ai/v1/chat/completions"
+
+    def chat_completion(self, messages, max_tokens=1000, stream=False):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        # استخدام موديل متطور من ميسترال
+        data = {
+            "model": "mistral-large-latest", 
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.7
+        }
+        try:
+            resp = requests.post(self.url, headers=headers, json=data, timeout=60)
+            if resp.status_code != 200:
+                print(f"Mistral Error {resp.status_code}: {resp.text}")
+                # محاولة استخدام موديل أصغر في حالة الخطأ أو نفاذ الكوتا
+                if resp.status_code == 429 or resp.status_code == 400:
+                    data["model"] = "mistral-small-latest"
+                    resp = requests.post(self.url, headers=headers, json=data, timeout=60)
+            
+            resp.raise_for_status()
+            return MockResponse(resp.json())
+        except Exception as e:
+            print(f"Mistral API Exception: {e}")
+            raise e
+
+# هياكل وهمية لتقليد استجابة HuggingFace Client حتى لا نغير باقي الكود
+class MockMessage:
+    def __init__(self, content): self.content = content
+class MockChoice:
+    def __init__(self, message): self.message = message
+class MockResponse:
+    def __init__(self, json_data):
+        content = ""
+        if 'choices' in json_data and len(json_data['choices']) > 0:
+            content = json_data['choices'][0]['message']['content']
+        self.choices = [MockChoice(MockMessage(content))]
+
+# ============================================================
+# Paper Trading Logic
 # ============================================================
 def init_paper_trading():
-    """تهيئة المحفظة الافتراضية إذا لم تكن موجودة"""
     try:
         ref = firebase_db.reference('paper_trading/balance')
         if ref.get() is None:
-            ref.set(1000.0) # رأس المال الافتراضي
+            ref.set(1000.0)
             firebase_db.reference('paper_trading/logs').push({
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
                 'message': "تم فتح المحفظة الافتراضية برأس مال 1000$."
@@ -92,13 +137,9 @@ def get_paper_portfolio():
         balance = firebase_db.reference('paper_trading/balance').get() or 0.0
         positions = firebase_db.reference('paper_trading/positions').get() or {}
         logs_data = firebase_db.reference('paper_trading/logs').order_by_key().limit_to_last(20).get() or {}
-        
-        # تحويل السجلات لقائمة مرتبة
         logs = []
-        for k, v in logs_data.items():
-            logs.append(v)
+        for k, v in logs_data.items(): logs.append(v)
         logs.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        
         return float(balance), positions, logs
     except: return 0.0, {}, []
 
@@ -111,22 +152,20 @@ def log_manager_action(message):
     except: pass
 
 def execute_paper_trades(signals_found, ai_client):
-    """الذكاء الاصطناعي يحلل الإشارات ويقرر التنفيذ"""
     if not signals_found or not ai_client: return
     
     balance, positions, _ = get_paper_portfolio()
-    current_equity = balance # تبسيط: السيولة المتاحة
+    current_equity = balance
     
-    # تحضير البيانات للذكاء الاصطناعي
     candidates = []
     for sig in signals_found:
-        if abs(sig['total_score']) >= 20: # فقط الصفقات القوية
+        if abs(sig['total_score']) >= 20:
             candidates.append({
                 'ticker': sig['ticker'],
                 'name': sig['name'],
                 'signal': sig['signal'],
                 'price': sig['price'],
-                'tp': sig['targets']['tp2'], # استهداف الهدف الثاني
+                'tp': sig['targets']['tp2'],
                 'sl': sig['targets']['sl'],
                 'score': sig['total_score']
             })
@@ -135,7 +174,6 @@ def execute_paper_trades(signals_found, ai_client):
         log_manager_action("قمت بمراجعة نتائج المسح، لم أجد فرصاً قوية بما يكفي للمخاطرة برأس المال الآن.")
         return
 
-    # استشارة المدير الذكي
     prompt = f"""
     أنت مدير محفظة استثمارية ذكي جداً. رأس مالك الحالي المتاح: {current_equity}$.
     لديك قائمة بفرص تداول محتملة (Signals).
@@ -155,7 +193,6 @@ def execute_paper_trades(signals_found, ai_client):
                 "action": "BUY/SELL",
                 "entry_price": 0.0,
                 "invest_amount": 0.0,
-                "leverage": 1,
                 "reason": "سبب الاختيار باختصار"
             }}
         ],
@@ -164,20 +201,16 @@ def execute_paper_trades(signals_found, ai_client):
     """
     
     try:
-        resp = ai_client.chat_completion(messages=[{"role":"user", "content": prompt}], max_tokens=500)
+        resp = ai_client.chat_completion(messages=[{"role":"user", "content": prompt}], max_tokens=1000)
         txt = resp.choices[0].message.content.strip()
         if "```" in txt:
              txt = txt.split("```")[1].replace("json", "").strip()
         
         decision = json.loads(txt)
-        
-        # تنفيذ الصفقات
         new_trades_count = 0
         for trade in decision.get('trades', []):
-            # البحث عن تفاصيل الصفقة الأصلية للأهداف
             orig = next((x for x in candidates if x['ticker'] == trade['ticker']), None)
             if orig and balance >= trade['invest_amount']:
-                # حفظ الصفقة
                 firebase_db.reference('paper_trading/positions').push({
                     'ticker': trade['ticker'],
                     'name': orig['name'],
@@ -190,14 +223,10 @@ def execute_paper_trades(signals_found, ai_client):
                     'reason': trade.get('reason', ''),
                     'status': 'OPEN'
                 })
-                # خصم من الرصيد (افتراضيا Margin)
                 balance -= float(trade['invest_amount'])
                 new_trades_count += 1
         
-        # تحديث الرصيد
         firebase_db.reference('paper_trading/balance').set(balance)
-        
-        # تسجيل اليوميات
         if new_trades_count > 0:
             log_manager_action(f"✅ تم فتح {new_trades_count} صفقات جديدة. {decision.get('log_message', '')}")
         else:
@@ -207,219 +236,94 @@ def execute_paper_trades(signals_found, ai_client):
         log_manager_action(f"حدث خطأ أثناء محاولة المدير اتخاذ قرار: {e}")
 
 def update_paper_positions_status():
-    """تحديث حالة الصفقات المفتوحة (TP/SL)"""
     balance, positions, _ = get_paper_portfolio()
     if not positions: return 0
-    
     updates = 0
     for key, pos in positions.items():
         if pos.get('status') != 'OPEN': continue
-        
         ticker = pos['ticker']
         is_buy = pos['type'] == 'buy'
-        
-        # جلب السعر الحالي
         try:
-            # نحاول جلب السعر من yfinance بشكل سريع
-            # ملاحظة: هذا قد يبطئ العملية قليلاً، لذا الأفضل تحديث جماعي، لكن للتبسيط:
-            df, _ = fetch_data(ticker, "15 دقيقة") # استخدام دالة موجودة
+            df, _ = fetch_data(ticker, "15 دقيقة")
             if df is None: continue
-            curr_price = float(df['Close'].iloc[-1])
-            high = float(df['High'].iloc[-1])
-            low = float(df['Low'].iloc[-1])
-            
-            outcome = None
-            close_price = 0
+            curr_price = float(df['Close'].iloc[-1]); high = float(df['High'].iloc[-1]); low = float(df['Low'].iloc[-1])
+            outcome = None; close_price = 0
             
             if is_buy:
                 if low <= pos['sl']: outcome = 'SL'; close_price = pos['sl']
                 elif high >= pos['tp']: outcome = 'TP'; close_price = pos['tp']
-            else: # Sell
+            else:
                 if high >= pos['sl']: outcome = 'SL'; close_price = pos['sl']
                 elif low <= pos['tp']: outcome = 'TP'; close_price = pos['tp']
             
             if outcome:
-                # حساب الربح/الخسارة
-                # معادلة مبسطة: (الفرق / سعر الدخول) * المبلغ المستثمر
-                if is_buy:
-                    pnl = ((close_price - pos['entry_price']) / pos['entry_price']) * pos['amount']
-                else:
-                    pnl = ((pos['entry_price'] - close_price) / pos['entry_price']) * pos['amount']
-                
+                if is_buy: pnl = ((close_price - pos['entry_price']) / pos['entry_price']) * pos['amount']
+                else: pnl = ((pos['entry_price'] - close_price) / pos['entry_price']) * pos['amount']
                 new_balance = balance + pos['amount'] + pnl
-                
-                # تحديث في القاعدة
                 firebase_db.reference(f'paper_trading/positions/{key}').update({
-                    'status': 'CLOSED',
-                    'close_price': close_price,
-                    'close_time': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'outcome': outcome,
-                    'pnl': pnl
+                    'status': 'CLOSED', 'close_price': close_price, 'close_time': datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    'outcome': outcome, 'pnl': pnl
                 })
                 firebase_db.reference('paper_trading/balance').set(new_balance)
-                
                 msg = f"🔔 أغلقت صفقة {pos['name']} ({outcome}). الربح/الخسارة: {pnl:.2f}$."
                 if outcome == 'TP': msg += " هدف رائع! 🚀"
-                else: msg += " تم تفعيل وقف الخسارة لحماية رأس المال."
+                else: msg += " تم تفعيل وقف الخسارة."
                 log_manager_action(msg)
-                
-                balance = new_balance # تحديث للمحلي للحلقة القادمة
+                balance = new_balance
                 updates += 1
-                
-        except Exception as e:
-            print(f"Error updating paper pos {ticker}: {e}")
-            
+        except: pass
     return updates
 
 # ============================================================
-# نظام البحث المتقدم - APIs قوية
+# SEARCH APIs
 # ============================================================
-
 SERPER_KEY = st.secrets.get("SERPER_API_KEY", "")
 TAVILY_KEY = st.secrets.get("TAVILY_API_KEY", "")
 
-
 def search_serper(query, max_results=8, search_type="search"):
-    """Serper.dev - أقوى محرك بحث مجاني (Google Results)"""
-    if not SERPER_KEY:
-        return [], []
+    if not SERPER_KEY: return [], []
     try:
         url = f"https://google.serper.dev/{search_type}"
         headers = {"X-API-KEY": SERPER_KEY, "Content-Type": "application/json"}
         payload = {"q": query, "num": max_results, "gl": "us", "hl": "ar"}
-
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return [], []
-
-        data = resp.json()
-        results = []
-        news = []
-
-        # نتائج البحث العادية
+        if resp.status_code != 200: return [], []
+        data = resp.json(); results = []; news = []
         for item in data.get("organic", [])[:max_results]:
-            results.append({
-                "title": item.get("title", ""),
-                "body": item.get("snippet", ""),
-                "href": item.get("link", ""),
-                "source": "Google (Serper)"
-            })
-
-        # Knowledge Graph - معلومات مباشرة
+            results.append({"title": item.get("title", ""), "body": item.get("snippet", ""), "href": item.get("link", ""), "source": "Google (Serper)"})
         kg = data.get("knowledgeGraph", {})
-        if kg:
-            kg_text = kg.get("description", "")
-            kg_title = kg.get("title", "")
-            if kg_text:
-                results.insert(0, {
-                    "title": f"📋 {kg_title}",
-                    "body": kg_text,
-                    "href": kg.get("website", ""),
-                    "source": "Google Knowledge"
-                })
-
-        # Answer Box - إجابة مباشرة
+        if kg: results.insert(0, {"title": f"📋 {kg.get('title','')}", "body": kg.get("description", ""), "href": kg.get("website", ""), "source": "Google Knowledge"})
         ab = data.get("answerBox", {})
-        if ab:
-            answer = ab.get("answer", "") or ab.get("snippet", "")
-            if answer:
-                results.insert(0, {
-                    "title": "💡 إجابة مباشرة",
-                    "body": answer,
-                    "href": ab.get("link", ""),
-                    "source": "Google Answer"
-                })
-
-        # أخبار
+        if ab: results.insert(0, {"title": "💡 إجابة مباشرة", "body": ab.get("answer", "") or ab.get("snippet", ""), "href": ab.get("link", ""), "source": "Google Answer"})
         for item in data.get("news", [])[:5]:
-            news.append({
-                "title": item.get("title", ""),
-                "body": item.get("snippet", ""),
-                "url": item.get("link", ""),
-                "date": item.get("date", ""),
-                "source": item.get("source", "")
-            })
-
+            news.append({"title": item.get("title", ""), "body": item.get("snippet", ""), "url": item.get("link", ""), "date": item.get("date", ""), "source": item.get("source", "")})
         return results, news
-    except Exception as e:
-        print(f"Serper error: {e}")
-        return [], []
-
+    except: return [], []
 
 def search_serper_news(query, max_results=8):
-    """بحث أخبار عبر Serper"""
-    if not SERPER_KEY:
-        return []
+    if not SERPER_KEY: return []
     try:
         headers = {"X-API-KEY": SERPER_KEY, "Content-Type": "application/json"}
         payload = {"q": query, "num": max_results, "gl": "us", "hl": "ar", "type": "news"}
         resp = requests.post("https://google.serper.dev/news", json=payload, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        news = []
+        if resp.status_code != 200: return []
+        data = resp.json(); news = []
         for item in data.get("news", [])[:max_results]:
-            news.append({
-                "title": item.get("title", ""),
-                "body": item.get("snippet", ""),
-                "url": item.get("link", ""),
-                "date": item.get("date", ""),
-                "source": item.get("source", "")
-            })
+            news.append({"title": item.get("title", ""), "body": item.get("snippet", ""), "url": item.get("link", ""), "date": item.get("date", ""), "source": item.get("source", "")})
         return news
-    except Exception as e:
-        print(f"Serper news error: {e}")
-        return []
-
+    except: return []
 
 def search_tavily(query, max_results=6):
-    """Tavily - محرك بحث ذكي مصمم للـ AI"""
-    if not TAVILY_KEY:
-        return [], []
+    if not TAVILY_KEY: return [], []
     try:
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": TAVILY_KEY,
-                "query": query,
-                "search_depth": "advanced",
-                "include_answer": True,
-                "include_raw_content": False,
-                "max_results": max_results,
-                "include_domains": [],
-                "exclude_domains": []
-            },
-            timeout=15
-        )
-        if resp.status_code != 200:
-            return [], []
-
-        data = resp.json()
-        results = []
-
-        # إجابة مباشرة من Tavily
-        answer = data.get("answer", "")
-        if answer:
-            results.insert(0, {
-                "title": "🧠 تحليل Tavily AI",
-                "body": answer,
-                "href": "",
-                "source": "Tavily AI"
-            })
-
+        resp = requests.post("https://api.tavily.com/search", json={"api_key": TAVILY_KEY, "query": query, "search_depth": "advanced", "include_answer": True, "max_results": max_results}, timeout=15)
+        if resp.status_code != 200: return [], []
+        data = resp.json(); results = []
+        if data.get("answer", ""): results.insert(0, {"title": "🧠 تحليل Tavily AI", "body": data.get("answer", ""), "href": "", "source": "Tavily AI"})
         for item in data.get("results", [])[:max_results]:
-            results.append({
-                "title": item.get("title", ""),
-                "body": item.get("content", "")[:300],
-                "href": item.get("url", ""),
-                "source": "Tavily"
-            })
-
+            results.append({"title": item.get("title", ""), "body": item.get("content", "")[:300], "href": item.get("url", ""), "source": "Tavily"})
         return results, []
-    except Exception as e:
-        print(f"Tavily error: {e}")
-        return [], []
-
+    except: return [], []
 
 def search_ddg(query, max_results=6):
     if not HAS_DDG: return []
@@ -427,15 +331,12 @@ def search_ddg(query, max_results=6):
         with DDGS() as ddgs: return list(ddgs.text(query, max_results=max_results, region='wt-wt'))
     except: return []
 
-
 def search_ddg_news(query, max_results=5):
     if not HAS_DDG: return []
     try:
         with DDGS() as ddgs: return list(ddgs.news(query, max_results=max_results, region='wt-wt'))
     except: return []
 
-
-# --- أسعار مباشرة ---
 def get_live_price(query):
     price_map = {
         'ذهب':'GC=F','gold':'GC=F','الذهب':'GC=F','xauusd':'GC=F','xau':'GC=F',
@@ -489,136 +390,73 @@ def get_live_price(query):
         except: continue
     return results
 
-
-# --- محرك البحث الموحد ---
 def unified_search(query, max_results=8):
-    """بحث موحد: Serper أولاً → Tavily → DuckDuckGo"""
-    all_results = []
-    all_news = []
-    sources_used = []
-
-    # 1. Serper (الأقوى - Google Results)
+    all_results = []; all_news = []; sources_used = []
     if SERPER_KEY:
-        serper_results, serper_news = search_serper(query, max_results)
-        if serper_results:
-            all_results.extend(serper_results)
-            sources_used.append("Google")
-        serper_news_extra = search_serper_news(query, 5)
-        if serper_news_extra:
-            all_news.extend(serper_news_extra)
-            if "Google News" not in sources_used:
-                sources_used.append("Google News")
-        elif serper_news:
-            all_news.extend(serper_news)
-
-    # 2. Tavily (تحليل ذكي)
+        sr, sn = search_serper(query, max_results); all_results.extend(sr)
+        if sr: sources_used.append("Google")
+        sne = search_serper_news(query, 5); all_news.extend(sne or sn)
+        if sne: sources_used.append("Google News")
     if TAVILY_KEY and len(all_results) < 5:
-        tavily_results, _ = search_tavily(query, max_results)
-        if tavily_results:
-            all_results.extend(tavily_results)
-            sources_used.append("Tavily AI")
-
-    # 3. DuckDuckGo (احتياطي)
+        tr, _ = search_tavily(query, max_results); all_results.extend(tr)
+        if tr: sources_used.append("Tavily AI")
     if len(all_results) < 3:
-        ddg_results = search_ddg(query, max_results)
-        if ddg_results:
-            all_results.extend(ddg_results)
-            sources_used.append("DuckDuckGo")
-        if not all_news:
-            ddg_news = search_ddg_news(query, 5)
-            if ddg_news:
-                all_news.extend(ddg_news)
-
-    # إزالة التكرار
-    seen = set(); unique = []
+        dr = search_ddg(query, max_results); all_results.extend(dr)
+        if dr: sources_used.append("DuckDuckGo")
+        if not all_news: all_news.extend(search_ddg_news(query, 5))
+    
+    unique = []; seen = set()
     for r in all_results:
-        t = r.get('title', '')[:40]
-        if t and t not in seen: seen.add(t); unique.append(r)
-
-    seen_n = set(); unique_n = []
+        if r.get('title') not in seen: seen.add(r.get('title')); unique.append(r)
+    unique_n = []; seen_n = set()
     for n in all_news:
-        t = n.get('title', '')[:40]
-        if t and t not in seen_n: seen_n.add(t); unique_n.append(n)
-
+        if n.get('title') not in seen_n: seen_n.add(n.get('title')); unique_n.append(n)
     return unique[:max_results], unique_n[:8], sources_used
 
-
 def build_search_context(query):
-    """بناء سياق شامل"""
     financial_words = ['سعر','price','btc','eth','gold','ذهب','دولار','يورو','سهم','stock','crypto','بيتكوين','نفط','oil','تداول','trading','forex','فوركس','market','سوق','اقتصاد','economy','fed','فائدة','interest','inflation','تضخم','nasdaq','bitcoin','ethereum','solana','usd','eur','gbp','jpy','توقع','forecast','تحليل','analysis','أخبار','news','xrp','bnb','ada','doge','apple','tesla','nvidia','google','amazon','microsoft','meta','netflix','amd','intel','كم','how much','فضة','silver','نحاس','copper','غاز','gas','باوند','ين','فرنك','ريبل','كاردانو','سولانا','ايثريوم','ابل','تسلا','نفيديا','جوجل','امازون','مايكروسوفت','ميتا','نتفلكس','sp500','داو','ناسداك','مؤشر','انفيديا']
     is_financial = any(w in query.lower() for w in financial_words)
-
     live_prices = get_live_price(query) if is_financial else []
     search_results, news_results, sources_used = unified_search(query, max_results=8)
-
     parts = [f"[التاريخ والوقت: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC]"]
-
     if live_prices:
         parts.append("\n=== أسعار لحظية (Yahoo Finance) ===")
-        for p in live_prices:
-            parts.append(f"• {p['name']}: {p['price']:.2f} USD | التغير: {p['change']:+.2f} ({p['change_pct']:+.2f}%) | أعلى: {p['high']:.2f} | أدنى: {p['low']:.2f} | افتتاح: {p['open']:.2f}")
-
+        for p in live_prices: parts.append(f"• {p['name']}: {p['price']:.2f} USD | التغير: {p['change']:+.2f} ({p['change_pct']:+.2f}%)")
     if news_results:
         parts.append("\n=== آخر الأخبار ===")
-        for i, r in enumerate(news_results[:6], 1):
-            parts.append(f"{i}. [{r.get('date','')}] {r.get('title','')} ({r.get('source','')}): {r.get('body','')[:200]}")
-
+        for i, r in enumerate(news_results[:6], 1): parts.append(f"{i}. [{r.get('date','')}] {r.get('title','')}: {r.get('body','')[:200]}")
     if search_results:
         parts.append("\n=== نتائج البحث ===")
-        for i, r in enumerate(search_results[:8], 1):
-            parts.append(f"{i}. [{r.get('source','')}] {r.get('title','')}: {r.get('body','')[:250]}")
-
-    context = "\n".join(parts) if len(parts) > 1 else ""
-    return context, search_results, news_results, live_prices, sources_used
-
+        for i, r in enumerate(search_results[:8], 1): parts.append(f"{i}. [{r.get('source','')}] {r.get('title','')}: {r.get('body','')[:250]}")
+    return "\n".join(parts) if len(parts) > 1 else "", search_results, news_results, live_prices, sources_used
 
 def format_live_prices_html(prices):
     if not prices: return ""
     html = ""
     for p in prices:
         arrow = "▲" if p['change']>=0 else "▼"
-        html += f"""<div class="live-price-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-size:18px;font-weight:bold;">{p['name']}</span>
-                <div style="text-align:left;">
-                    <div style="font-size:22px;font-weight:bold;color:{p['color']};">{p['price']:,.2f} $</div>
-                    <div style="font-size:14px;color:{p['color']};">{arrow} {p['change']:+,.2f} ({p['change_pct']:+.2f}%)</div>
-                </div>
-            </div>
-            <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#9ca3af;">
-                <span>افتتاح: {p['open']:,.2f}</span><span>أعلى: {p['high']:,.2f}</span><span>أدنى: {p['low']:,.2f}</span><span>سابق: {p['prev_close']:,.2f}</span>
-            </div>
-            <div style="font-size:10px;color:#6b7280;margin-top:5px;">📊 Yahoo Finance | {p['timestamp']}</div>
-        </div>"""
+        html += f"""<div class="live-price-card"><div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:18px;font-weight:bold;">{p['name']}</span><div style="text-align:left;"><div style="font-size:22px;font-weight:bold;color:{p['color']};">{p['price']:,.2f} $</div><div style="font-size:14px;color:{p['color']};">{arrow} {p['change']:+,.2f} ({p['change_pct']:+.2f}%)</div></div></div><div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#9ca3af;"><span>افتتاح: {p['open']:,.2f}</span><span>أعلى: {p['high']:,.2f}</span><span>أدنى: {p['low']:,.2f}</span><span>سابق: {p['prev_close']:,.2f}</span></div><div style="font-size:10px;color:#6b7280;margin-top:5px;">📊 Yahoo Finance | {p['timestamp']}</div></div>"""
     return html
-
 
 def format_sources_html(search_results, news_results, sources_used=None):
     if not search_results and not news_results: return ""
     html = '<div style="margin-top:15px;padding-top:10px;border-top:1px solid #333;">'
     if sources_used:
         html += '<p style="color:#64748b;font-size:11px;margin-bottom:5px;">🔍 '
-        for s in sources_used:
-            html += f'<span class="search-engine-badge">{s}</span> '
+        for s in sources_used: html += f'<span class="search-engine-badge">{s}</span> '
         html += '</p>'
     html += '<p style="color:#94a3b8;font-size:13px;margin-bottom:8px;">📎 المصادر:</p>'
     all_src = []
-    for r in (news_results or [])[:3]:
-        all_src.append({'title':r.get('title',''),'url':r.get('url',''),'source':r.get('source',''),'type':'news'})
-    for r in (search_results or [])[:4]:
-        all_src.append({'title':r.get('title',''),'url':r.get('href',''),'source':r.get('source',''),'type':'web'})
+    for r in (news_results or [])[:3]: all_src.append({'title':r.get('title',''),'url':r.get('url',''),'source':r.get('source',''),'type':'news'})
+    for r in (search_results or [])[:4]: all_src.append({'title':r.get('title',''),'url':r.get('href',''),'source':r.get('source',''),'type':'web'})
     for s in all_src[:6]:
-        icon="📰" if s.get('type')=='news' else "🔗"
-        title=s['title'][:70]+"..." if len(s.get('title',''))>70 else s.get('title','')
-        url=s.get('url','#')
-        src=f" <span style='color:#475569;font-size:10px;'>({s.get('source','')})</span>" if s.get('source') else ""
+        icon="📰" if s.get('type')=='news' else "🔗"; title=s['title'][:70]+"..." if len(s.get('title',''))>70 else s.get('title',''); url=s.get('url','#'); src=f" <span style='color:#475569;font-size:10px;'>({s.get('source','')})</span>" if s.get('source') else ""
         html += f'<div class="web-source">{icon} <a href="{url}" target="_blank">{title}</a>{src}</div>'
     html += '</div>'
     return html
 
-
 # ============================================================
-# Session State + بيانات
+# Session State & Config
 # ============================================================
 def init_session_state():
     defaults = {'messages':[],'current_view':'analysis','scan_running':False,
@@ -627,8 +465,6 @@ def init_session_state():
     for k,v in defaults.items():
         if k not in st.session_state: st.session_state[k] = v
 init_session_state()
-
-# بدء المحفظة الافتراضية
 init_paper_trading()
 
 FOREX_PAIRS={"EUR/USD":"EURUSD=X","GBP/USD":"GBPUSD=X","USD/JPY":"USDJPY=X","USD/CHF":"USDCHF=X","AUD/USD":"AUDUSD=X","NZD/USD":"NZDUSD=X","USD/CAD":"USDCAD=X","EUR/GBP":"EURGBP=X","EUR/JPY":"EURJPY=X","GBP/JPY":"GBPJPY=X","Gold":"GC=F","Silver":"SI=F","Oil":"CL=F"}
@@ -647,14 +483,14 @@ def to_tv_symbol(ticker):
     if ticker=="CL=F":return "NYMEX:CL1!"
     return f"NASDAQ:{ticker}"
 
-client=None
-try:
-    token=st.secrets.get("HF_TOKEN","")
-    if token:client=InferenceClient(model="Qwen/Qwen2.5-72B-Instruct",token=token)
-except:client=None
+# إعداد عميل ميسترال إذا وجد المفتاح
+client = None
+mistral_key = st.secrets.get("MISTRAL_API_KEY", "")
+if mistral_key:
+    client = MistralClient(mistral_key)
 
 # ============================================================
-# دوال التحليل (نفسها بالضبط)
+# ANALYSIS FUNCTIONS
 # ============================================================
 def safe_val(v,d=0.0):
     try:v=float(v);return d if(np.isnan(v)or np.isinf(v))else v
@@ -941,19 +777,13 @@ def smart_update_signal(sr):
             ch=float(c['High']);cl=float(c['Low']);ct=str(idx)
             if is_buy:
                 if cl<=sl and ch>=tp2:
-                    co=float(c['Open'])
-                    if abs(co-sl)<abs(co-tp2):hs='sl_hit';hp=sl
-                    else:hs='tp_hit';hp=tp2
-                    ht=ct;break
+                    co=float(c['Open']);hs='tp_hit' if abs(co-tp2)<abs(co-sl) else 'sl_hit';hp=tp2 if hs=='tp_hit' else sl;ht=ct;break
                 elif cl<=sl:hs='sl_hit';ht=ct;hp=sl;break
                 elif ch>=tp2:hs='tp_hit';ht=ct;hp=tp2;break
                 if ch>=tp1:t1h=True
             else:
                 if ch>=sl and cl<=tp2:
-                    co=float(c['Open'])
-                    if abs(co-sl)<abs(co-tp2):hs='sl_hit';hp=sl
-                    else:hs='tp_hit';hp=tp2
-                    ht=ct;break
+                    co=float(c['Open']);hs='tp_hit' if abs(co-tp2)<abs(co-sl) else 'sl_hit';hp=tp2 if hs=='tp_hit' else sl;ht=ct;break
                 elif ch>=sl:hs='sl_hit';ht=ct;hp=sl;break
                 elif cl<=tp2:hs='tp_hit';ht=ct;hp=tp2;break
                 if cl<=tp1:t1h=True
@@ -968,13 +798,10 @@ def smart_update_signal(sr):
     except:return None
 
 def background_scan(assets_dict,scan_tf,ai_token):
-    aic=None
-    if ai_token:
-        try:aic=InferenceClient(model="Qwen/Qwen2.5-72B-Instruct",token=ai_token)
-        except:aic=None
-    total=len(assets_dict);found=0;scanned=0;db.set_scan_status(True,0,total,0,0,'بدء...')
+    # استخدام Mistral Client في الخلفية
+    aic = MistralClient(ai_token) if ai_token else None
     
-    # قائمة لتخزين الإشارات القوية لإرسالها لمدير المحفظة
+    total=len(assets_dict);found=0;scanned=0;db.set_scan_status(True,0,total,0,0,'بدء...')
     strong_signals = []
     
     for name,tick in assets_dict.items():
@@ -985,16 +812,17 @@ def background_scan(assets_dict,scan_tf,ai_token):
                 if db.add_signal(str(tick),str(name),r['direction'],float(r['price']),float(r['targets']['tp1']),float(r['targets']['tp2']),float(r['targets']['tp3']),float(r['targets']['sl']),float(abs(r['total_score'])),str(scan_tf),float(r['tech_score']),float(r['fund_score']),float(r['news_score']),float(r['ai_score']),str(r['filters_text']),str(r['ai_reasoning'])):found+=1
                 strong_signals.append(r)
         except Exception as e:print(f"Scan err {name}:{e}");continue
-        time.sleep(0.5)
+        
+        # الانتظار لمدة دقيقة (60 ثانية) لتجنب Rate Limit الخاص بـ Mistral
+        time.sleep(60)
         
     db.set_scan_status(False,100,total,scanned,found,'اكتمل')
     
-    # تنفيذ صفقات الورق تلقائياً بعد انتهاء المسح
     if aic and strong_signals:
         execute_paper_trades(strong_signals, aic)
 
 # ============================================================
-# الواجهة
+# MAIN UI
 # ============================================================
 st.title("ProTrade Elite 5.0 📊")
 required=['init_db','add_signal','get_active_signals','get_closed_signals','update_signal_status','save_analysis','set_scan_status','get_scan_status','delete_all_active']
@@ -1015,7 +843,7 @@ with st.expander("☰ القائمة",expanded=False):
         if st.button("🤖 الدردشة",use_container_width=True):st.session_state.current_view="chat";st.rerun()
 
 # ============================================================
-# التوصيات
+# VIEW: Signals
 # ============================================================
 if st.session_state.current_view=="signals":
     st.header("📋 التوصيات الذكية")
@@ -1058,22 +886,17 @@ if st.session_state.current_view=="signals":
                     if "أسهم" in scan_types:assets.update(STOCKS)
             if not assets:st.warning("اختر أصول")
             else:
-                st.session_state.scan_running=True;threading.Thread(target=background_scan,args=(assets,scan_tf,st.secrets.get("HF_TOKEN","")),daemon=True).start();st.success(f"🚀 {len(assets)} أصل");time.sleep(2);st.rerun()
+                # نمرر مفتاح Mistral هنا بدلاً من HF
+                st.session_state.scan_running=True;threading.Thread(target=background_scan,args=(assets,scan_tf,st.secrets.get("MISTRAL_API_KEY","")),daemon=True).start();st.success(f"🚀 {len(assets)} أصل");time.sleep(2);st.rerun()
     if update_btn:
-        active=db.get_active_signals()
-        
-        # تحديث المحفظة الافتراضية أيضاً
-        paper_updates = update_paper_positions_status()
-        
+        active=db.get_active_signals(); paper_updates = update_paper_positions_status()
         if active:
             uc=0;prog=st.progress(0);stat=st.empty()
             for i,sr in enumerate(active):
                 prog.progress((i+1)/len(active));stat.text(f"🔄 {sr.get('asset_name','')} ({i+1}/{len(active)})")
                 r=smart_update_signal(sr)
                 if r:db.update_signal_status(sr['id'],r['current_price'],r['status'],r['progress'],r['pnl'],r.get('hit_time',''),r.get('hit_price',0));uc+=1
-            prog.empty();stat.empty()
-            
-            msg = f"✅ تم تحديث {uc} توصية"
+            prog.empty();stat.empty(); msg = f"✅ تم تحديث {uc} توصية"
             if paper_updates > 0: msg += f" و {paper_updates} صفقة محفظة"
             st.success(msg);time.sleep(1);st.rerun()
         else:
@@ -1112,85 +935,39 @@ if st.session_state.current_view=="signals":
     else:st.info("لا منتهية")
 
 # ============================================================
-# Paper Trading View (New)
+# VIEW: Paper Portfolio
 # ============================================================
 elif st.session_state.current_view=="paper":
     st.header("💼 مدير المحفظة الآلي (Paper Trading)")
-    
-    # جلب البيانات
     balance, positions, logs = get_paper_portfolio()
-    
-    # حساب الإحصائيات
-    invested = 0
-    unrealized_pnl = 0
-    open_positions_count = 0
-    
-    # حساب تقريبي للأرباح غير المحققة (للعرض فقط)
+    invested = 0; open_positions_count = 0
     for k, p in positions.items():
-        if p.get('status') == 'OPEN':
-            invested += p.get('amount', 0)
-            open_positions_count += 1
-            # هنا يمكن إضافة منطق لحساب الربح اللحظي، لكن سنعتمد على التحديث اليدوي لتوفير الموارد
-            
-    equity = balance + invested # (ملاحظة: هذا تقريبي، السيولة + المستثمر)
-    
-    # عرض الملخص
+        if p.get('status') == 'OPEN': invested += p.get('amount', 0); open_positions_count += 1
+    equity = balance + invested
     col1, col2, col3 = st.columns(3)
     col1.markdown(f'<div class="portfolio-card"><h3>💵 السيولة المتاحة</h3><h2 style="color:#34d399">{balance:.2f} $</h2></div>', unsafe_allow_html=True)
     col2.markdown(f'<div class="portfolio-card"><h3>🔒 المبلغ المستثمر</h3><h2 style="color:#60a5fa">{invested:.2f} $</h2></div>', unsafe_allow_html=True)
     col3.markdown(f'<div class="portfolio-card"><h3>📈 إجمالي القيمة</h3><h2 style="color:#facc15">{equity:.2f} $</h2></div>', unsafe_allow_html=True)
-    
     st.subheader("🤖 يوميات المدير الذكي")
     with st.container(height=300):
-        for log in logs:
-            st.markdown(f'<div class="manager-log"><b>[{log.get("timestamp")}]</b>: {log.get("message")}</div>', unsafe_allow_html=True)
-            
+        for log in logs: st.markdown(f'<div class="manager-log"><b>[{log.get("timestamp")}]</b>: {log.get("message")}</div>', unsafe_allow_html=True)
     st.subheader(f"📊 الصفقات المفتوحة ({open_positions_count})")
     if open_positions_count > 0:
         for k, p in positions.items():
             if p.get('status') == 'OPEN':
                 color = "#34d399" if p['type'] == 'buy' else "#f87171"
-                st.markdown(f"""
-                <div class="trade-row" style="border-left: 5px solid {color}">
-                    <div>
-                        <strong>{p['name']} ({p['ticker']})</strong><br>
-                        <span style="font-size:0.8em; color:#aaa">{p['open_time']}</span>
-                    </div>
-                    <div>
-                        <span style="color:{color}; font-weight:bold">{p['type'].upper()}</span><br>
-                        Entry: {p['entry_price']}
-                    </div>
-                    <div>
-                        Invest: {p['amount']}$<br>
-                        TP: {p['tp']} | SL: {p['sl']}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                with st.expander(f"📝 سبب الدخول في {p['ticker']}"):
-                    st.write(p.get('reason', 'لا يوجد سبب مسجل'))
-    else:
-        st.info("لا توجد صفقات مفتوحة حالياً. قم بعمل مسح (Scan) ليقوم المدير بالبحث عن فرص.")
-
-    st.markdown("---")
-    st.subheader("📜 سجل الصفقات المغلقة")
+                st.markdown(f"""<div class="trade-row" style="border-left: 5px solid {color}"><div><strong>{p['name']} ({p['ticker']})</strong><br><span style="font-size:0.8em; color:#aaa">{p['open_time']}</span></div><div><span style="color:{color}; font-weight:bold">{p['type'].upper()}</span><br>Entry: {p['entry_price']}</div><div>Invest: {p['amount']}$<br>TP: {p['tp']} | SL: {p['sl']}</div></div>""", unsafe_allow_html=True)
+                with st.expander(f"📝 سبب الدخول في {p['ticker']}"): st.write(p.get('reason', 'لا يوجد سبب مسجل'))
+    else: st.info("لا توجد صفقات مفتوحة حالياً. قم بعمل مسح (Scan) ليقوم المدير بالبحث عن فرص.")
+    st.markdown("---"); st.subheader("📜 سجل الصفقات المغلقة")
     closed_trades = []
     for k, p in positions.items():
-        if p.get('status') == 'CLOSED':
-            closed_trades.append({
-                "التاريخ": p.get('close_time'),
-                "الرمز": p.get('ticker'),
-                "النوع": p.get('type'),
-                "النتيجة": p.get('outcome'),
-                "الربح/الخسارة": round(p.get('pnl', 0), 2)
-            })
-    
-    if closed_trades:
-        st.dataframe(pd.DataFrame(closed_trades), use_container_width=True)
-    else:
-        st.caption("لم يتم إغلاق أي صفقة بعد.")
+        if p.get('status') == 'CLOSED': closed_trades.append({"التاريخ": p.get('close_time'), "الرمز": p.get('ticker'), "النوع": p.get('type'), "النتيجة": p.get('outcome'), "الربح/الخسارة": round(p.get('pnl', 0), 2)})
+    if closed_trades: st.dataframe(pd.DataFrame(closed_trades), use_container_width=True)
+    else: st.caption("لم يتم إغلاق أي صفقة بعد.")
 
 # ============================================================
-# التحليل
+# VIEW: Analysis
 # ============================================================
 elif st.session_state.current_view=="analysis":
     st.header("📉 التحليل")
@@ -1230,7 +1007,7 @@ elif st.session_state.current_view=="analysis":
             else:st.warning("AI غير مفعل")
 
 # ============================================================
-# الشارت
+# VIEW: Chart
 # ============================================================
 elif st.session_state.current_view=="chart":
     if not st.session_state.get('chart_fullscreen'):
@@ -1253,22 +1030,20 @@ elif st.session_state.current_view=="chart":
         st.components.v1.html(f'<div id="tvf" style="height:95vh;width:100%;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"width":"100%","height":"95%","symbol":"{sym}","interval":"{intv}","timezone":"Etc/UTC","theme":"dark","style":"1","locale":"ar","toolbar_bg":"#1a1a2e","enable_publishing":false,"hide_side_toolbar":false,"allow_symbol_change":true,"save_image":true,"studies":["MAExp@tv-basicstudies","RSI@tv-basicstudies","MACD@tv-basicstudies","BB@tv-basicstudies"],"show_popup_button":true,"popup_width":"1200","popup_height":"800","container_id":"tvf","withdateranges":true,"details":true,"hotlist":true,"calendar":true,"watchlist":true}});</script>',height=900)
 
 # ============================================================
-# الدردشة
+# VIEW: Chat
 # ============================================================
 elif st.session_state.current_view=="chat":
     st.header("🤖 المستشار المالي الذكي")
-
-    # عرض المحركات المتاحة
     engines = []
     if SERPER_KEY: engines.append("✅ Google (Serper)")
     if TAVILY_KEY: engines.append("✅ Tavily AI")
     if HAS_DDG: engines.append("✅ DuckDuckGo")
     engines.append("✅ Yahoo Finance (أسعار)")
+    if client: engines.append("✅ Mistral AI") # التأكيد على وجود ميسترال
+    
     st.caption(f"🔍 محركات البحث: {' | '.join(engines)}")
-
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):st.markdown(msg["content"],unsafe_allow_html=True)
-
     ui=st.chat_input("اسأل عن أي سعر أو موضوع...")
     if ui:
         st.session_state.messages.append({"role":"user","content":ui})
@@ -1301,25 +1076,15 @@ elif st.session_state.current_view=="chat":
                     st.session_state.messages.append({"role":"assistant","content":ph+"\n\n"+rt+"\n\n"+sh})
                 except Exception as e:
                     fb=""
-                    if lp:
-                        fb+="📊 **أسعار:**\n"
-                        for p in lp:fb+=f"{'📈' if p['change']>=0 else '📉'} **{p['name']}**: {p['price']:,.2f}$ ({p['change_pct']:+.2f}%)\n"
-                    if nr:
-                        fb+="\n📰 **أخبار:**\n"
-                        for r in nr[:3]:fb+=f"- {r.get('title','')}\n"
+                    if lp: fb+="📊 **أسعار:**\n" + "".join([f"{'📈' if p['change']>=0 else '📉'} **{p['name']}**: {p['price']:,.2f}$ ({p['change_pct']:+.2f}%)\n" for p in lp])
+                    if nr: fb+="\n📰 **أخبار:**\n" + "".join([f"- {r.get('title','')}\n" for r in nr[:3]])
                     if fb:st.markdown(fb);st.session_state.messages.append({"role":"assistant","content":ph+fb})
                     else:st.error(f"⚠️{e}")
             else:
                 resp=""
-                if lp:
-                    resp+="📊 **أسعار (Yahoo Finance):**\n\n"
-                    for p in lp:resp+=f"{'📈' if p['change']>=0 else '📉'} **{p['name']}**: **{p['price']:,.2f}**$ | {p['change']:+,.2f} ({p['change_pct']:+.2f}%)\nأعلى:{p['high']:,.2f} أدنى:{p['low']:,.2f} افتتاح:{p['open']:,.2f}\n\n"
-                if nr:
-                    resp+="📰 **أخبار:**\n"
-                    for r in nr[:5]:resp+=f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
-                if sr:
-                    resp+="🔗 **معلومات:**\n"
-                    for r in sr[:3]:resp+=f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n"
+                if lp: resp+="📊 **أسعار (Yahoo Finance):**\n\n" + "".join([f"{'📈' if p['change']>=0 else '📉'} **{p['name']}**: **{p['price']:,.2f}**$ | {p['change']:+,.2f} ({p['change_pct']:+.2f}%)\nأعلى:{p['high']:,.2f} أدنى:{p['low']:,.2f} افتتاح:{p['open']:,.2f}\n\n" for p in lp])
+                if nr: resp+="📰 **أخبار:**\n" + "".join([f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n" for r in nr[:5]])
+                if sr: resp+="🔗 **معلومات:**\n" + "".join([f"- **{r.get('title','')}**\n  {r.get('body','')[:200]}\n\n" for r in sr[:3]])
                 if not resp:resp="⚠️ لم أجد نتائج."
                 sh=format_sources_html(sr,nr,su)
                 st.markdown(resp,unsafe_allow_html=True)
