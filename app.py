@@ -841,7 +841,7 @@ missing=[f for f in required if not hasattr(db,f)]
 if missing:st.error(f"⚠️ db.py ناقص:{','.join(missing)}");st.stop()
 
 with st.expander("☰ القائمة",expanded=False):
-    n1,n2,n3,n4,n5=st.columns(5)
+    n1,n2,n3,n4,n5,n6=st.columns(6)
     with n1:
         if st.button("📋 التوصيات",use_container_width=True):st.session_state.current_view="signals";st.rerun()
     with n2:
@@ -852,6 +852,8 @@ with st.expander("☰ القائمة",expanded=False):
         if st.button("💼 المحفظة",use_container_width=True):st.session_state.current_view="paper";st.rerun()
     with n5:
         if st.button("🤖 الدردشة",use_container_width=True):st.session_state.current_view="chat";st.rerun()
+    with n6:
+        if st.button("⚙️ إعدادات",use_container_width=True):st.session_state.current_view="settings";st.rerun()
 
 # ============================================================
 # VIEW: Signals
@@ -1103,3 +1105,68 @@ elif st.session_state.current_view=="chat":
 
     if st.session_state.messages:
         if st.button("🗑️ مسح"):st.session_state.messages=[];st.rerun()
+
+# ============================================================
+# VIEW: Settings
+# ============================================================
+elif st.session_state.current_view == "settings":
+    st.header("⚙️ إعدادات النظام والمحفظة")
+    
+    # 1. Wallet Management
+    st.subheader("💰 إدارة الأموال")
+    balance, _, _ = get_paper_portfolio()
+    st.metric("الرصيد الحالي", f"{balance:.2f} $")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### ➕ إضافة رصيد")
+        add_amount = st.number_input("المبلغ للإضافة", min_value=1.0, value=100.0, step=100.0)
+        if st.button("إيداع فوري"):
+            new_bal = balance + add_amount
+            firebase_db.reference('paper_trading/balance').set(new_bal)
+            log_manager_action(f"💵 تم إيداع {add_amount}$ يدوياً. الرصيد الجديد: {new_bal}$")
+            st.success("تم الإيداع بنجاح!")
+            time.sleep(1)
+            st.rerun()
+            
+    with c2:
+        st.markdown("#### 🔄 تصفير المحفظة (بدء جديد)")
+        start_cap = st.number_input("رأس المال الجديد", min_value=100.0, value=1000.0, step=100.0)
+        if st.button("⚠️ حذف السجل وبدء رصيد جديد"):
+            firebase_db.reference('paper_trading').delete() # Delete all paper trading data
+            firebase_db.reference('paper_trading/balance').set(start_cap)
+            firebase_db.reference('paper_trading/logs').push({
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
+                'message': f"تم إعادة ضبط المحفظة يدوياً برأس مال {start_cap}$."
+            })
+            st.success("تم تصفير المحفظة بنجاح!")
+            time.sleep(1)
+            st.rerun()
+
+    st.markdown("---")
+    
+    # 2. System Reset (Danger Zone)
+    st.subheader("☠️ منطقة الخطر")
+    st.warning("هذه الإجراءات لا يمكن التراجع عنها.")
+    
+    if st.button("🗑️ حذف جميع البيانات (فورمات شامل)", type="primary"):
+        # Delete Firebase Nodes
+        try:
+            firebase_db.reference('paper_trading').delete()
+            firebase_db.reference('signals_tracking').delete()
+            firebase_db.reference('analysis_history').delete()
+            firebase_db.reference('scan_status').delete()
+        except: pass
+        
+        # Clear Session State
+        st.session_state.messages = []
+        st.session_state.scan_results = 0
+        st.session_state.scan_complete = False
+        st.session_state.paper_trades_checked = False
+        
+        # Re-init paper trading basic node
+        init_paper_trading()
+        
+        st.toast("تم حذف كل شيء! التطبيق عاد وكأنه جديد.")
+        time.sleep(2)
+        st.rerun()
