@@ -88,7 +88,7 @@ class MistralClient:
             "model": "mistral-large-latest", 
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.7
+            "temperature": 0.4  # تقليل العشوائية ليكون أكثر انضباطاً
         }
         try:
             resp = requests.post(self.url, headers=headers, json=data, timeout=60)
@@ -116,7 +116,7 @@ class MockResponse:
         self.choices = [MockChoice(MockMessage(content))]
 
 # ============================================================
-# Paper Trading Logic
+# Paper Trading Logic (Smart Risk Manager)
 # ============================================================
 def init_paper_trading():
     try:
@@ -150,38 +150,53 @@ def log_manager_action(message):
 
 def process_single_paper_trade(signal_data, ai_client):
     """
-    معالجة إشارة واحدة فورياً:
-    1. التحقق من الرصيد.
-    2. استشارة AI.
-    3. التنفيذ أو التجاهل.
+    معالجة إشارة واحدة بذكاء وضوابط صارمة
     """
     if not signal_data or not ai_client: return
 
-    # جلب الرصيد الحالي
+    # جلب الرصيد الحالي والصفقات المفتوحة
     try:
         balance = float(firebase_db.reference('paper_trading/balance').get() or 0.0)
+        positions = firebase_db.reference('paper_trading/positions').get() or {}
     except:
-        balance = 0.0
+        balance = 0.0; positions = {}
     
+    # 1. فلتر الأمان الأول: الحد الأقصى للصفقات المتزامنة
+    open_trades_count = sum(1 for p in positions.values() if p.get('status') == 'OPEN')
+    if open_trades_count >= 8:
+        log_manager_action(f"⚠️ تجاهلت إشارة {signal_data['name']} لأن لدي {open_trades_count} صفقات مفتوحة. يجب تقليل المخاطرة.")
+        return
+
     current_equity = balance
     
-    # تحضير رسالة للذكاء الاصطناعي
+    # 2. حساب إدارة المخاطر الصارمة (Hard Rules)
+    # لا تخاطر بأكثر من 5% من الرصيد في الصفقة الواحدة
+    max_allowed_investment = current_equity * 0.05 
+    
+    # تحضير رسالة للذكاء الاصطناعي (موجهة لتكون حذرة جداً)
     prompt = f"""
-    أنت مدير محفظة ذكي. الرصيد المتاح: {current_equity}$.
-    وصلتك إشارة تداول جديدة:
+    أنت مدير مخاطر صارم ومحافظ جداً لمحفظة تداول.
+    رأس المال المتاح: {current_equity}$.
+    
+    وصلتك فرصة تداول:
     - الأصل: {signal_data['name']} ({signal_data['ticker']})
-    - الاتجاه: {signal_data['signal']}
-    - السعر: {signal_data['price']}
-    - القوة: {signal_data['total_score']}
-    - الهدف: {signal_data['targets']['tp2']}
-    - الوقف: {signal_data['targets']['sl']}
+    - الاتجاه: {signal_data['signal']} (Buy/Sell)
+    - السعر الحالي: {signal_data['price']}
+    - قوة الإشارة: {signal_data['total_score']} (من 100)
+    - وقف الخسارة (SL): {signal_data['targets']['sl']}
+    - الهدف الثاني (TP2): {signal_data['targets']['tp2']}
 
-    قرر فوراً: هل تدخل هذه الصفقة؟ وكم تستثمر؟
-    JSON فقط:
+    قواعدك الصارمة:
+    1. هدفك الأول هو حماية رأس المال. لا تقامر أبداً.
+    2. الحد الأقصى المسموح لاستثماره في هذه الصفقة هو {max_allowed_investment:.2f}$ (5% من الرصيد). لا تتجاوز هذا الرقم أبداً.
+    3. احسب نسبة العائد للمخاطرة (Risk/Reward). إذا كان الربح المحتمل أقل من ضعف الخسارة المحتملة، ارفض الصفقة.
+    4. إذا كانت قوة الإشارة أقل من 25، ارفض الصفقة.
+
+    القرار المطلوب (JSON):
     {{
         "decision": "ENTER" أو "SKIP",
         "invest_amount": 0.0,
-        "reason": "سبب مختصر جدا"
+        "reason": "تحليل دقيق لسبب الدخول أو الرفض بناء على المخاطرة"
     }}
     """
     
@@ -195,7 +210,14 @@ def process_single_paper_trade(signal_data, ai_client):
         
         if decision.get('decision') == 'ENTER':
             amount = float(decision.get('invest_amount', 0))
-            if amount > 0 and balance >= amount:
+            
+            # 3. فلتر الأمان النهائي (Code Override)
+            # حتى لو الذكاء الاصطناعي قال مبلغ كبير، الكود سيجبره على الحد الأقصى
+            if amount > max_allowed_investment:
+                log_manager_action(f"🛡️ تم تخفيض مبلغ استثمار {signal_data['name']} من {amount}$ إلى {max_allowed_investment:.2f}$ التزاماً بقواعد إدارة المخاطر.")
+                amount = max_allowed_investment
+            
+            if amount > 5 and balance >= amount: # الحد الأدنى 5 دولار
                 # تنفيذ الصفقة
                 firebase_db.reference('paper_trading/positions').push({
                     'ticker': signal_data['ticker'],
@@ -213,12 +235,12 @@ def process_single_paper_trade(signal_data, ai_client):
                 new_balance = balance - amount
                 firebase_db.reference('paper_trading/balance').set(new_balance)
                 
-                log_manager_action(f"✅ دخلت صفقة جديدة على {signal_data['name']} بقيمة {amount}$. السبب: {decision.get('reason','')}")
+                log_manager_action(f"✅ دخلت صفقة مدروسة على {signal_data['name']} بقيمة {amount:.2f}$. التحليل: {decision.get('reason','')}")
             else:
-                log_manager_action(f"⚠️ رفضت الصفقة على {signal_data['name']} بسبب نقص الرصيد أو مبلغ غير صالح.")
+                log_manager_action(f"⚠️ تم رفض صفقة {signal_data['name']} لأن المبلغ المقترح {amount}$ غير منطقي أو الرصيد غير كاف.")
         else:
-            # تم التجاهل (لا نسجل في اللوج لتجنب الإزعاج، إلا إذا أردت)
-            pass
+            # تسجيل سبب الرفض للتعلم
+            log_manager_action(f"✋ رفضت فرصة {signal_data['name']}: {decision.get('reason', 'مخاطرة عالية')}")
             
     except Exception as e:
         print(f"AI Manager Error: {e}")
@@ -245,18 +267,19 @@ def update_paper_positions_status():
                 elif low <= pos['tp']: outcome = 'TP'; close_price = pos['tp']
             
             if outcome:
+                # حساب دقيق للربح والخسارة
                 if is_buy: pnl = ((close_price - pos['entry_price']) / pos['entry_price']) * pos['amount']
                 else: pnl = ((pos['entry_price'] - close_price) / pos['entry_price']) * pos['amount']
+                
                 new_balance = balance + pos['amount'] + pnl
                 firebase_db.reference(f'paper_trading/positions/{key}').update({
                     'status': 'CLOSED', 'close_price': close_price, 'close_time': datetime.now().strftime("%Y-%m-%d %H:%M"),
                     'outcome': outcome, 'pnl': pnl
                 })
                 firebase_db.reference('paper_trading/balance').set(new_balance)
-                msg = f"🔔 أغلقت صفقة {pos['name']} ({outcome}). الربح/الخسارة: {pnl:.2f}$."
-                if outcome == 'TP': msg += " هدف رائع! 🚀"
-                else: msg += " تم تفعيل وقف الخسارة."
-                log_manager_action(msg)
+                
+                icon = "💰" if pnl > 0 else "🛡️"; res_txt = "ربح" if pnl > 0 else "خسارة"
+                log_manager_action(f"{icon} أغلقت صفقة {pos['name']} ({outcome}). {res_txt}: {pnl:.2f}$. الرصيد الجديد: {new_balance:.2f}$")
                 balance = new_balance
                 updates += 1
         except: pass
