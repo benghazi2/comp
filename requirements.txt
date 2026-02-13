@@ -1,8 +1,5 @@
 streamlit
-firebase-admin
-yfinance
 pandas
-ta
 numpy
-huggingface_hub
-duckduckgo-search
+yfinance
+requests
